@@ -1,0 +1,22 @@
+# Firebase credentials
+firebase-adminsdk*.json
+*.env
+.env
+
+# Model weights
+*.pt
+*.weights
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Flutter build output
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+
+# Mac files
+.DS_Store
