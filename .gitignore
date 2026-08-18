@@ -25,3 +25,11 @@ app/.flutter-plugins-dependencies
 *.db
 *.sqlite
 *.sqlite3
+
+#Virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
