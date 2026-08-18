@@ -19,6 +19,7 @@ kernel = cv2.getStructuringElement(
     (5, 5)
 )
 
+movement_frames = 0
 
 while True:
     success, frame = camera.read()
@@ -43,10 +44,35 @@ while True:
         kernel
     )
 
+    contours, _ = cv2.findContours(
+    mask,
+    cv2.RETR_EXTERNAL,
+    cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+
+        if area > 500:
+            x, y, w, h = cv2.boundingRect(contour)
+
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 255, 0),
+                2
+            )
+
     foreground_pixels = cv2.countNonZero(mask)
 
     if foreground_pixels > 1000:
-        print("Movement detected")
+        movement_frames += 1
+    else:
+        movement_frames = 0
+
+    if movement_frames >= 5:
+        print("Confirmed movement")
 
     cv2.imshow("Original", frame)
     cv2.imshow("Clean MOG2 Mask", mask)
