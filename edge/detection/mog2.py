@@ -1,12 +1,7 @@
 import cv2
+from camera import open_camera
 
-
-camera = cv2.VideoCapture(0)
-
-if not camera.isOpened():
-    print("Could not open camera")
-    exit()
-
+camera = open_camera()
 
 mog2 = cv2.createBackgroundSubtractorMOG2(
     history=500,
