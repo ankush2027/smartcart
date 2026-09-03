@@ -1,6 +1,6 @@
 import cv2
-from camera import open_camera
-from event import create_movement_event
+from edge.detection.camera import open_camera
+from edge.detection.event import create_movement_event
 
 camera = open_camera()
 
