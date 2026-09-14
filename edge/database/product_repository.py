@@ -1,7 +1,7 @@
 from edge.database.database import get_connection
 
 
-def add_product(name, barcode, price, expected_weight):
+def add_product(name, barcode, price, expected_weight, yolo_class=None):
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -10,14 +10,16 @@ def add_product(name, barcode, price, expected_weight):
             name,
             barcode,
             price,
-            expected_weight
+            expected_weight,
+            yolo_class
         )
-        VALUES (?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
     """, (
         name,
         barcode,
         price,
-        expected_weight
+        expected_weight,
+        yolo_class
     ))
 
     connection.commit()
@@ -34,10 +36,42 @@ def get_product_by_barcode(barcode):
             name,
             barcode,
             price,
-            expected_weight
+            expected_weight,
+            yolo_class
         FROM products
         WHERE barcode = ?
     """, (barcode,))
+
+    product = cursor.fetchone()
+
+    connection.close()
+
+    return product
+
+
+def get_product_by_yolo_class(yolo_class):
+    """
+    Return the product row whose yolo_class matches the supplied label.
+
+    Returns a tuple:
+        (product_id, name, barcode, price, expected_weight, yolo_class)
+
+    or None if no matching product exists.
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            product_id,
+            name,
+            barcode,
+            price,
+            expected_weight,
+            yolo_class
+        FROM products
+        WHERE yolo_class = ?
+    """, (yolo_class,))
 
     product = cursor.fetchone()
 
@@ -56,7 +90,8 @@ def get_all_products():
             name,
             barcode,
             price,
-            expected_weight
+            expected_weight,
+            yolo_class
         FROM products
         ORDER BY product_id
     """)

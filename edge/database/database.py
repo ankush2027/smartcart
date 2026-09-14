@@ -31,9 +31,19 @@ def initialize_database():
             name TEXT NOT NULL,
             barcode TEXT UNIQUE,
             price REAL NOT NULL,
-            expected_weight REAL NOT NULL
+            expected_weight REAL NOT NULL,
+            yolo_class TEXT
         )
     """)
+
+    # Migration: add yolo_class to existing databases that were created
+    # before this column was introduced.  SQLite does not support
+    # "ALTER TABLE … ADD COLUMN IF NOT EXISTS", so we catch the
+    # OperationalError that fires when the column already exists.
+    try:
+        cursor.execute("ALTER TABLE products ADD COLUMN yolo_class TEXT")
+    except Exception:
+        pass  # column already present — nothing to do
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bill_items (

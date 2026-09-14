@@ -2,123 +2,109 @@ import cv2
 from edge.detection.camera import open_camera
 from edge.detection.event import create_movement_event
 
-camera = open_camera()
-
-mog2 = cv2.createBackgroundSubtractorMOG2(
-    history=500,
-    varThreshold=50,
-    detectShadows=True
-)
-
-kernel = cv2.getStructuringElement(
-    cv2.MORPH_ELLIPSE,
-    (5, 5)
-)
-
-movement_frames = 0
-movement_active = False
-
 # Number of consecutive frames required to confirm movement
 REQUIRED_FRAMES = 5
 
-while True:
-    success, frame = camera.read()
 
-    if not success:
-        print("Could not read frame")
-        break
+def run_motion_detector(camera_index: int = 0) -> None:
+    """
+    Open the camera and run the MOG2 motion-detection loop.
 
-    # -----------------------------
-    # MOG2 background subtraction
-    # -----------------------------
-    mask = mog2.apply(frame)
+    Prints a DetectionEvent to stdout each time confirmed movement is
+    detected.  Press 'q' in either display window to quit.
 
-    # Remove small noise
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_OPEN,
-        kernel
+    Parameters
+    ----------
+    camera_index:
+        OpenCV camera index (default 0 = built-in/first webcam).
+    """
+    camera = open_camera(camera_index)
+
+    mog2 = cv2.createBackgroundSubtractorMOG2(
+        history=500,
+        varThreshold=50,
+        detectShadows=True,
     )
 
-    # Fill small gaps
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        kernel
-    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
-    # Calculate foreground pixels BEFORE using them
-    foreground_pixels = cv2.countNonZero(mask)
+    movement_frames = 0
+    movement_active = False
 
-    # -----------------------------
-    # Find significant movement
-    # -----------------------------
-    largest_contour = None
-    largest_area = 0
+    while True:
+        success, frame = camera.read()
 
-    contours, _ = cv2.findContours(
-        mask,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
+        if not success:
+            print("Could not read frame")
+            break
 
-    for contour in contours:
+        # -----------------------------------------------------------------
+        # MOG2 background subtraction
+        # -----------------------------------------------------------------
+        mask = mog2.apply(frame)
 
-        area = cv2.contourArea(contour)
+        # Remove small noise
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-        if area > largest_area:
-            largest_area = area
-            largest_contour = contour
+        # Fill small gaps
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    # -----------------------------
-    # Movement detection
-    # -----------------------------
-    if largest_area > 500:
+        foreground_pixels = cv2.countNonZero(mask)
 
-        movement_frames += 1
+        # -----------------------------------------------------------------
+        # Find significant movement
+        # -----------------------------------------------------------------
+        largest_contour = None
+        largest_area = 0
 
-        x, y, w, h = cv2.boundingRect(largest_contour)
-
-        cv2.rectangle(
-            frame,
-            (x, y),
-            (x + w, y + h),
-            (0, 255, 0),
-            2
+        contours, _ = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
         )
 
-    else:
-        movement_frames = 0
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area > largest_area:
+                largest_area = area
+                largest_contour = contour
 
-        # Movement has stopped
-        movement_active = False
+        # -----------------------------------------------------------------
+        # Movement detection
+        # -----------------------------------------------------------------
+        if largest_area > 500:
+            movement_frames += 1
 
-    # -----------------------------
-    # Confirm movement ONCE
-    # -----------------------------
-    if movement_frames >= REQUIRED_FRAMES:
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-        if not movement_active:
+        else:
+            movement_frames = 0
+            movement_active = False
 
-            movement_active = True
+        # -----------------------------------------------------------------
+        # Confirm movement ONCE per gesture
+        # -----------------------------------------------------------------
+        if movement_frames >= REQUIRED_FRAMES:
+            if not movement_active:
+                movement_active = True
 
-            event = create_movement_event(
-                (x, y, w, h),
-                foreground_pixels
-            )
+                event = create_movement_event((x, y, w, h), foreground_pixels)
+                print(event)
+                print("Confirmed movement")
 
-            print(event)
-            print("Confirmed movement")
+        # -----------------------------------------------------------------
+        # Display
+        # -----------------------------------------------------------------
+        cv2.imshow("Original", frame)
+        cv2.imshow("Clean MOG2 Mask", mask)
 
-    # -----------------------------
-    # Display
-    # -----------------------------
-    cv2.imshow("Original", frame)
-    cv2.imshow("Clean MOG2 Mask", mask)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+    camera.release()
+    cv2.destroyAllWindows()
 
 
-camera.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    run_motion_detector()
