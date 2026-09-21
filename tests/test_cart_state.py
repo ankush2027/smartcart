@@ -14,6 +14,7 @@ Covers:
     10. test_quantity_removal_to_empty  — add 3×, remove 3× → empty state
 """
 
+# pyrefly: ignore [missing-import]
 import pytest
 
 from edge.detection.cart_state import CartItem, CartState

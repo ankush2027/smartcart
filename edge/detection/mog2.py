@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 import cv2
 from edge.detection.camera import open_camera
 from edge.detection.event import create_movement_event

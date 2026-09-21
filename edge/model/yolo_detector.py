@@ -102,6 +102,7 @@ class YOLODetector:
             # Lazy import: only pay the ultralytics/torch cost when a real
             # model is actually needed.  This keeps module-level imports fast
             # and avoids breaking the test suite when ultralytics is absent.
+            # pyrefly: ignore [missing-import]
             from ultralytics import YOLO  # noqa: PLC0415
 
             self._model = YOLO(str(model_path))

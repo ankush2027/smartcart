@@ -42,6 +42,7 @@ Covered cases (per task spec):
 import importlib
 import sys
 
+# pyrefly: ignore [missing-import]
 import pytest
 
 from edge.detection.product_resolver import Detection
