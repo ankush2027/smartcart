@@ -67,11 +67,7 @@ void main() {
       if (role == UserRole.customer) {
         expect(find.text('Customer Cart'), findsOneWidget);
       } else {
-        expect(find.text('Manager'), findsOneWidget);
-        expect(
-          find.text('Manager experience coming in Stage 4'),
-          findsOneWidget,
-        );
+        expect(find.text('Manager Dashboard'), findsOneWidget);
       }
       expect(find.text('Welcome Back'), findsNothing);
       await tester.scrollUntilVisible(find.text('Logout'), 300);

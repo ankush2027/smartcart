@@ -1,6 +1,6 @@
 # SmartCart mobile application
 
-Stage 3 — Customer UI and mock cart repository. Run Flutter commands here:
+Stage 4 — Manager UI and mock monitoring repository. Run Flutter commands here:
 
 ```sh
 flutter pub get
@@ -17,7 +17,7 @@ flutter run
 - `lib/features/auth/data/auth_repository.dart`: sign-in, sign-out, and current-session contract; optional development role-selection capability.
 - `lib/features/auth/data/in_memory_auth_repository.dart`: temporary demo implementation.
 - `lib/features/auth/controllers/auth_controller.dart`: session, loading, safe errors, and duplicate-submission protection using ChangeNotifier.
-- `lib/features/auth/screens/`: login and the retained Manager placeholder.
+- `lib/features/auth/screens/`: login and the preserved Stage 2 placeholder source.
 - `lib/features/customer/`: Customer cart models, repository, controller, screen, and reusable item/bill widgets.
 - `lib/features/launch/launch_screen.dart`: preserved Stage 1 foundation screen, no longer the initial route.
 
@@ -34,7 +34,7 @@ During Stage 6, supply a Firebase-backed AuthRepository at the app composition p
 
 ## Customer cart
 
-Customer login opens Customer Cart with session status, repository-provided items, and a Current Bill summary on the same scrollable screen. Manager retains its Stage 2 placeholder. Both keep authentication-driven logout.
+Customer login opens Customer Cart with session status, repository-provided items, and a Current Bill summary on the same scrollable screen. Manager opens its monitoring dashboard. Both keep authentication-driven logout.
 
 Customer UI → CartController (ChangeNotifier) → CartRepository → MockCartRepository. The Customer controller is disposed on logout; pending loads cannot restore a signed-out view. Inject a different CartRepository through SmartCartApp to replace the data source without changing widgets.
 
@@ -42,7 +42,15 @@ CustomerCart, CartItem, and CartProduct are client presentation models, independ
 
 Names and prices are development fixtures, not a permanent product catalogue. The default mock demonstrates six lines/eight units and ₹130.00. MockCartScenario also supports empty, noSession, and failure fixtures for injection/tests. Loading and safe error/retry states are handled by the controller. The UI clearly labels demo data and makes no live-connectivity claim.
 
-Firebase is not connected. There is no pairing, live subscription, checkout, cart editing, Manager dashboard, or backend integration. Cart data loads on entering the Customer screen and on error retry; realtime updates and user/session binding await the backend contract.
+Firebase is not connected. There is no pairing, live subscription, checkout, cart editing, or backend integration. Cart data loads on entering the Customer screen and on error retry; realtime updates and user/session binding await the backend contract.
+
+## Manager monitoring
+
+Manager UI → ManagerController (ChangeNotifier) → ManagerRepository → MockManagerRepository. The read-only dashboard shows repository-supplied active carts, current alerts, and recent activity. Counts reflect the supplied collections; bill amounts reuse the Customer rupee formatter without recalculation. No detail/editing view is included.
+
+All fixtures are development-only. Alerts and event labels represent backend-originated concepts: Flutter displays messages and performs no theft detection, event classification, or sensor analysis. Firebase remains disconnected. The mock supports populated, empty, and failure scenarios; the controller supports loading, safe errors, retry, duplicate-request protection, and disposal on logout.
+
+Proposed client requirements for later contract review: session display ID, supplied status, item count, authoritative total in paise, update timestamp; alert ID, severity/status labels, message, timestamp and related session; event ID, label, message, timestamp and related session. These are not Firebase paths or a finalized schema. Repository collections must be scoped/ordered appropriately by the future adapter. Timestamps display local date/time; data is a snapshot loaded on entry or retry, not live monitoring.
 
 ## Validation
 

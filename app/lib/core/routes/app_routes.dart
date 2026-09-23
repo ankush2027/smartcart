@@ -5,7 +5,8 @@ import '../../features/auth/screens/login_screen.dart';
 import '../../features/auth/models/auth_user.dart';
 import '../../features/customer/data/cart_repository.dart';
 import '../../features/customer/screens/customer_screen.dart';
-import '../../features/auth/screens/role_placeholder_screen.dart';
+import '../../features/manager/data/manager_repository.dart';
+import '../../features/manager/screens/manager_screen.dart';
 
 abstract final class AppRoutes {
   static const authentication = '/';
@@ -14,6 +15,7 @@ abstract final class AppRoutes {
   static Map<String, WidgetBuilder> routes(
     AuthController controller,
     CartRepository cartRepository,
+    ManagerRepository managerRepository,
   ) => {
     authentication: (_) => ListenableBuilder(
       listenable: controller,
@@ -23,7 +25,7 @@ abstract final class AppRoutes {
             ? LoginScreen(controller: controller)
             : user.role == UserRole.customer
             ? CustomerScreen(auth: controller, repository: cartRepository)
-            : RolePlaceholderScreen(controller: controller, role: user.role);
+            : ManagerScreen(auth: controller, repository: managerRepository);
       },
     ),
   };
