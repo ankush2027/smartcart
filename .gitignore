@@ -1,5 +1,6 @@
 # Firebase credentials
 firebase-adminsdk*.json
+*firebase-adminsdk*.json
 *.env
 .env
 
