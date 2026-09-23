@@ -64,14 +64,17 @@ void main() {
       await tester.ensureVisible(find.text('Sign In'));
       await tester.tap(find.text('Sign In'));
       await tester.pumpAndSettle();
-      expect(find.text(role.label), findsOneWidget);
-      expect(
-        find.text(
-          '${role.label} experience coming in Stage ${role == UserRole.customer ? 3 : 4}',
-        ),
-        findsOneWidget,
-      );
+      if (role == UserRole.customer) {
+        expect(find.text('Customer Cart'), findsOneWidget);
+      } else {
+        expect(find.text('Manager'), findsOneWidget);
+        expect(
+          find.text('Manager experience coming in Stage 4'),
+          findsOneWidget,
+        );
+      }
       expect(find.text('Welcome Back'), findsNothing);
+      await tester.scrollUntilVisible(find.text('Logout'), 300);
       await tester.tap(find.text('Logout'));
       await tester.pumpAndSettle();
       expect(find.text('Welcome Back'), findsOneWidget);

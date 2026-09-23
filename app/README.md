@@ -1,6 +1,6 @@
 # SmartCart mobile application
 
-Stage 2 — Authentication foundation and UI. Run Flutter commands here:
+Stage 3 — Customer UI and mock cart repository. Run Flutter commands here:
 
 ```sh
 flutter pub get
@@ -17,7 +17,8 @@ flutter run
 - `lib/features/auth/data/auth_repository.dart`: sign-in, sign-out, and current-session contract; optional development role-selection capability.
 - `lib/features/auth/data/in_memory_auth_repository.dart`: temporary demo implementation.
 - `lib/features/auth/controllers/auth_controller.dart`: session, loading, safe errors, and duplicate-submission protection using ChangeNotifier.
-- `lib/features/auth/screens/`: login and role destination placeholders.
+- `lib/features/auth/screens/`: login and the retained Manager placeholder.
+- `lib/features/customer/`: Customer cart models, repository, controller, screen, and reusable item/bill widgets.
 - `lib/features/launch/launch_screen.dart`: preserved Stage 1 foundation screen, no longer the initial route.
 
 UI → controller → repository abstraction → in-memory implementation.
@@ -31,7 +32,17 @@ The demo simulates a short delay, retains only the role in memory, and loses the
 
 During Stage 6, supply a Firebase-backed AuthRepository at the app composition point and omit DevelopmentRoleSelection. The login form and placeholders need no Firebase-specific code. Session restoration and external authentication events/token expiration must be added to the controller/repository lifecycle during that integration. This stage reads the repository's current session at startup and manages sign-in/sign-out changes only. No Firebase user schema or backend role contract is defined here.
 
-Customer and Manager destinations contain only their role, the future-stage message, and Logout. No cart, bill, dashboards, sessions, monitoring, or backend functionality is implemented.
+## Customer cart
+
+Customer login opens Customer Cart with session status, repository-provided items, and a Current Bill summary on the same scrollable screen. Manager retains its Stage 2 placeholder. Both keep authentication-driven logout.
+
+Customer UI → CartController (ChangeNotifier) → CartRepository → MockCartRepository. The Customer controller is disposed on logout; pending loads cannot restore a signed-out view. Inject a different CartRepository through SmartCartApp to replace the data source without changing widgets.
+
+CustomerCart, CartItem, and CartProduct are client presentation models, independent of backend session or recognition code. Money uses integer paise, formatted separately. The mock alone derives sample line/subtotal/total values. Widgets consume explicit repository totals; authoritative billing remains the backend's responsibility. Item count means total units, not distinct product lines. No tax or discount rules are invented.
+
+Names and prices are development fixtures, not a permanent product catalogue. The default mock demonstrates six lines/eight units and ₹130.00. MockCartScenario also supports empty, noSession, and failure fixtures for injection/tests. Loading and safe error/retry states are handled by the controller. The UI clearly labels demo data and makes no live-connectivity claim.
+
+Firebase is not connected. There is no pairing, live subscription, checkout, cart editing, Manager dashboard, or backend integration. Cart data loads on entering the Customer screen and on error retry; realtime updates and user/session binding await the backend contract.
 
 ## Validation
 
@@ -42,6 +53,6 @@ flutter test
 flutter build apk --debug
 ```
 
-Tests cover initial login, input validation, password visibility, both roles and logout, loading and safe errors, small-screen/large-text/keyboard behavior, the preserved Stage 1 content, and repository/controller behavior.
+Tests cover authentication and logout, preserved Stage 1 content, cart states/retry, item and bill rendering, integer money, repository/controller lifecycle, and smaller screens with increased text scaling.
 
 Android is the development target. iOS scaffolding remains unvalidated. Generated app identifiers and launcher icons are development defaults. This folder belongs to the parent smart-cart Git repository.
