@@ -21,6 +21,15 @@ SQLite is the authoritative source of truth.  Every sync function is called
 A Firebase failure is surfaced to the caller as an exception; it never
 causes a SQLite rollback or modifies local billing state.
 
+Failure boundary
+----------------
+Firebase failures propagate as exceptions to the caller (CartSession).
+CartSession logs them but does NOT roll back the SQLite transaction —
+SQLite success and Firebase success are independent.  This is the intended
+behaviour: the cart is billed correctly even if a Firebase write fails.
+An offline queue / replay system can be layered on top later without
+changing this module.
+
 Approved Firebase schema (subset handled here)::
 
     /
@@ -32,6 +41,8 @@ Approved Firebase schema (subset handled here)::
     │   └── yolo_class
     │
     └── sessions/{session_id}/
+        ├── cart_id
+        ├── customer_uid
         ├── start_time
         ├── end_time
         ├── total_amount
@@ -153,14 +164,16 @@ def sync_session(
     end_time: str | None,
     total_amount: float,
     *,
+    cart_id: str | None = None,
+    customer_uid: str | None = None,
     _ref=None,
 ) -> None:
     """
     Write session metadata to Firebase at ``sessions/{session_id}/``.
 
-    Only the three approved scalar fields are written.  ``status`` is
-    intentionally omitted — active/completed state is derivable from
-    ``end_time == null`` in the Flutter client.
+    Uses ``update()`` (not ``set()``) so that sibling nodes
+    (``bill_items/``, ``event_log/``) that already exist under the
+    session path are not deleted.
 
     Parameters
     ----------
@@ -170,11 +183,19 @@ def sync_session(
         SQLite ``datetime('now')`` string written by ``billing.create_session()``.
     end_time:
         SQLite ``datetime('now')`` string written by ``billing.complete_session()``,
-        or ``None`` when the session is still active.
+        or ``None`` when the session is still active.  Active vs completed
+        state is derivable in Flutter from ``end_time == null``.
     total_amount:
         Running cart total.  Updated on every ADD/REMOVE by
         ``billing.calculate_total()`` and finalised by
         ``billing.complete_session()``.
+    cart_id:
+        Stable physical cart identifier, or ``None`` when not yet assigned.
+        Represents the physical cart this session is associated with.
+    customer_uid:
+        Firebase Auth UID of the assigned customer, or ``None`` when no
+        customer has been assigned yet.  Firebase security rules use this
+        value to restrict customer read access to their own session.
     _ref:
         Injected root reference for testing.
 
@@ -182,11 +203,18 @@ def sync_session(
     ------
     Exception
         Any Firebase SDK exception is propagated to the caller.
+
+    Notes
+    -----
+    ``status`` is intentionally omitted — it is derivable from
+    ``end_time == null`` in the Flutter client.
     """
     data = {
-        "start_time": start_time,
-        "end_time": end_time,
+        "start_time":   start_time,
+        "end_time":     end_time,
         "total_amount": total_amount,
+        "cart_id":      cart_id,
+        "customer_uid": customer_uid,
     }
 
     _root_ref(_ref).child(f"sessions/{session_id}").update(data)

@@ -5,14 +5,18 @@ Responsibilities:
     - Accept a confirmed ADD or REMOVE event (detections + weight_change).
     - Delegate product resolution to an injected ProductResolver.
     - Apply the resolution to CartState (in-memory) and billing (SQLite).
+    - After every successful SQLite mutation, synchronize the result to
+      Firebase via the injected Firebase reference.
+    - Support cart_id and customer_uid session ownership.
     - Return an inspectable SessionResult for every call.
 
 Non-responsibilities:
     - Does NOT perform YOLO inference.
     - Does NOT perform event detection (camera, weight sensor).
     - Does NOT contain MOG2, HX711, or EventOrchestrator logic.
-    - Does NOT implement adaptive thresholding, Firebase, or Flutter.
+    - Does NOT implement adaptive thresholding.
     - Does NOT duplicate ProductResolver logic.
+    - Does NOT duplicate billing or sync logic.
 
 Consistency model
 -----------------
@@ -22,6 +26,8 @@ ADD flow
     3. Call billing.add_item() first.
     4. If billing fails → return failure; CartState is still clean.
     5. Call CartState.add() (guaranteed to succeed).
+    6. Synchronize to Firebase (bill item + session total + event log).
+    7. Firebase failure is logged but does NOT roll back the SQLite state.
 
 REMOVE flow
     1. Resolve product (ProductResolver.resolve_remove, reads CartState BEFORE).
@@ -30,31 +36,73 @@ REMOVE flow
     4. If CartState.remove() returns False → product not in cart; billing unchanged.
     5. Call billing.remove_item().
     6. If billing fails → rollback CartState (re-add the item); return failure.
+    7. Synchronize to Firebase (bill item updated or deleted + session total + event log).
+    8. Firebase failure is logged but does NOT roll back the SQLite state.
+
+Firebase synchronization point
+-------------------------------
+Firebase sync occurs **after** the corresponding SQLite operation succeeds.
+This is the single authoritative synchronization point for all ADD/REMOVE
+operations.  The sync helpers in ``edge.firebase.sync`` are called directly
+from this class; they are never called from inside ``edge.billing``.
+
+SQLite-authoritative rule
+-------------------------
+SQLite success ≠ Firebase success.  They are independent systems.  A Firebase
+failure surfaces as an exception from the sync call but does NOT cause a
+SQLite rollback.  The cart continues to bill correctly even when Firebase is
+unreachable.
 
 Limitation
 ----------
 CartState (in-memory) and billing (SQLite) are separate stores with no shared
 transaction boundary.  The rollback in REMOVE step 6 is best-effort Python and
-is safe as long as CartState.add() does not raise (it cannot with the current
-pure-Python implementation).  If strict atomic rollback across both stores
-becomes a requirement, CartState should be migrated to the same SQLite database
-so both mutations can occur inside one transaction.
+is safe as long as CartState.add() does not raise.  If strict atomic rollback
+across both stores becomes a requirement, CartState should be migrated to the
+same SQLite database so both mutations can occur inside one transaction.
+
+Future: offline queue
+---------------------
+Firebase sync is structured so an offline queue can be added later without
+rewriting billing.  The sync call in :meth:`_sync_after_add` and
+:meth:`_sync_after_remove` is the single point where a queue-and-retry layer
+would be inserted.
+
+Session ownership model
+-----------------------
+Each CartSession carries an optional ``cart_id`` (physical cart identifier)
+and ``customer_uid`` (Firebase Auth UID).  These are persisted to SQLite
+via ``billing`` and included in every Firebase session sync.
+
+    Cart  →  Active shopping session  →  Customer UID
+
+A session is considered active when ``end_time == null`` in Firebase.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from edge.billing.billing import (
     add_item as _billing_add,
+    assign_customer_to_session as _billing_assign_customer,
+    calculate_total as _billing_calculate_total,
     complete_session as _billing_complete,
     create_session as _billing_create_session,
     get_bill as _billing_get_bill,
+    get_bill_item as _billing_get_bill_item,
+    get_latest_log_entry as _billing_get_latest_log,
     get_session_log as _billing_get_log,
+    get_session_meta as _billing_get_session_meta,
     remove_item as _billing_remove,
+    set_session_cart_id as _billing_set_cart_id,
 )
 from edge.detection.cart_state import CartState
 from edge.detection.product_resolver import Detection, ProductResolver
+from edge.firebase import sync as _firebase_sync
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +148,7 @@ class CartSession:
     Each instance owns:
     - An independent :class:`~edge.detection.cart_state.CartState`.
     - A billing ``session_id`` created in the SQLite ``sessions`` table.
+    - An optional Firebase reference used for synchronization.
 
     It does NOT share state with any other CartSession instance and does NOT
     use module-level globals.
@@ -114,11 +163,21 @@ class CartSession:
         a pre-existing billing session (e.g. for testing).  If ``None``
         (the default), a new session row is created via
         ``billing.create_session()``.
+    cart_id:
+        Optional stable physical cart identifier (e.g. QR code value).
+        When provided, it is persisted to the SQLite ``sessions`` row
+        immediately and included in every Firebase session sync.
+    firebase_ref:
+        Optional root Firebase Realtime Database reference.  When provided,
+        all successful billing mutations are synchronized to Firebase.
+        When ``None``, Firebase synchronization is silently skipped —
+        useful for tests that do not need Firebase.  Pass a fake reference
+        object to test sync behavior without a real Firebase project.
 
     Usage::
 
         resolver = ProductResolver(catalog)
-        session  = CartSession(resolver)
+        session  = CartSession(resolver, firebase_ref=my_firebase_root_ref)
 
         result = session.process_add(
             detections=[Detection(\"Maggi_10\", 0.92)],
@@ -132,14 +191,47 @@ class CartSession:
         self,
         resolver: ProductResolver,
         session_id: int | None = None,
+        *,
+        cart_id: str | None = None,
+        firebase_ref=None,
     ) -> None:
         self._resolver: ProductResolver = resolver
         self._cart_state: CartState = CartState()
-        self._session_id: int = (
-            session_id
-            if session_id is not None
-            else _billing_create_session()
-        )
+        self._firebase_ref = firebase_ref
+
+        if session_id is not None:
+            self._session_id: int = session_id
+        else:
+            self._session_id = _billing_create_session(cart_id=cart_id)
+            if cart_id is not None and session_id is None:
+                # cart_id already stored by create_session(); no extra write needed.
+                pass
+
+        # Persist cart_id when a pre-existing session_id was supplied but
+        # cart_id was also given — update the existing row.
+        if session_id is not None and cart_id is not None:
+            _billing_set_cart_id(self._session_id, cart_id)
+
+    # ------------------------------------------------------------------
+    # Session ownership
+    # ------------------------------------------------------------------
+
+    def assign_customer(self, customer_uid: str) -> None:
+        """
+        Assign an authenticated customer's Firebase UID to this session.
+
+        Persists ``customer_uid`` to SQLite and synchronizes the session
+        metadata to Firebase (if a Firebase reference is configured).
+
+        Parameters
+        ----------
+        customer_uid:
+            The Firebase Auth UID of the authenticated customer.  This
+            value is used by Firebase security rules to restrict customer
+            read access to their own session only.
+        """
+        _billing_assign_customer(self._session_id, customer_uid)
+        self._sync_session_meta()
 
     # ------------------------------------------------------------------
     # Core event processing
@@ -164,6 +256,8 @@ class CartSession:
         -------
         SessionResult
             ``success=True`` when both CartState and billing are updated.
+            Firebase sync is attempted after SQLite success; Firebase
+            failures do not change the ``success`` flag.
         """
         resolution = self._resolver.resolve_add(
             detections=detections,
@@ -199,6 +293,10 @@ class CartSession:
         # CartState.add() has no failure path — safe to call after billing.
         self._cart_state.add(resolution.product_id, resolution.yolo_class)
 
+        # Firebase sync: after both SQLite and CartState succeed.
+        # Firebase failure is logged but does NOT roll back SQLite.
+        self._sync_after_add(resolution.product_id)
+
         return SessionResult(
             success=True,
             resolved=True,
@@ -227,6 +325,8 @@ class CartSession:
         -------
         SessionResult
             ``success=True`` when both CartState and billing are updated.
+            Firebase sync is attempted after SQLite success; Firebase
+            failures do not change the ``success`` flag.
         """
         # resolve_remove reads CartState.snapshot() internally.
         resolution = self._resolver.resolve_remove(
@@ -277,6 +377,10 @@ class CartSession:
                 ),
             )
 
+        # Firebase sync: after both SQLite and CartState succeed.
+        # Firebase failure is logged but does NOT roll back SQLite.
+        self._sync_after_remove(resolution.product_id)
+
         return SessionResult(
             success=True,
             resolved=True,
@@ -302,9 +406,18 @@ class CartSession:
         Mark the session as complete and return the final total.
 
         After this call the ``sessions`` row is updated with ``end_time``
-        and ``total_amount``.
+        and ``total_amount``.  The final session state is then synchronized
+        to Firebase (if a Firebase reference is configured).
+
+        Returns
+        -------
+        float
+            Final total.
         """
-        return _billing_complete(self._session_id)
+        total = _billing_complete(self._session_id)
+        # Sync the completed session state (end_time + final total).
+        self._sync_session_meta()
+        return total
 
     def get_session_log(self) -> list:
         """Return the ordered ADD/REMOVE event log for this session."""
@@ -328,3 +441,173 @@ class CartSession:
         go through :meth:`process_add` or :meth:`process_remove`.
         """
         return self._cart_state
+
+    # ------------------------------------------------------------------
+    # Firebase synchronization (private)
+    # ------------------------------------------------------------------
+
+    def _sync_after_add(self, product_id: int) -> None:
+        """
+        Synchronize Firebase after a successful ADD billing mutation.
+
+        Sequence:
+          1. Fetch the updated bill item from SQLite.
+          2. sync_bill_item  → Firebase bill_items/{product_id}
+          3. sync_session    → Firebase sessions/{session_id} (total_amount)
+          4. append_event_log → Firebase event_log/{push_key}
+
+        Firebase failure is logged and re-raised so the caller can decide
+        how to handle it.  SQLite state is never rolled back here.
+        """
+        if self._firebase_ref is None:
+            return
+
+        try:
+            bill_item = _billing_get_bill_item(self._session_id, product_id)
+            if bill_item is None:
+                logger.warning(
+                    "CartSession._sync_after_add: bill item for session=%d "
+                    "product=%d not found in SQLite after add; skipping sync",
+                    self._session_id, product_id,
+                )
+                return
+
+            _pid, name, quantity, price, total = bill_item
+
+            _firebase_sync.sync_bill_item(
+                session_id=self._session_id,
+                product_id=product_id,
+                product_name=name,
+                quantity=quantity,
+                price=price,
+                total=total,
+                _ref=self._firebase_ref,
+            )
+
+            self._sync_session_meta()
+
+            log_entry = _billing_get_latest_log(self._session_id)
+            if log_entry is not None:
+                _firebase_sync.append_event_log(
+                    session_id=self._session_id,
+                    timestamp=log_entry[2],   # timestamp column
+                    event_type=log_entry[3],  # event_type column
+                    product_id=log_entry[4],  # product_id column
+                    _ref=self._firebase_ref,
+                )
+
+        except Exception:
+            logger.exception(
+                "CartSession._sync_after_add: Firebase sync failed for "
+                "session=%d product=%d — SQLite state is unchanged",
+                self._session_id, product_id,
+            )
+            raise
+
+    def _sync_after_remove(self, product_id: int) -> None:
+        """
+        Synchronize Firebase after a successful REMOVE billing mutation.
+
+        Sequence:
+          1. Check whether the bill item still exists in SQLite.
+          2a. If it still exists (quantity > 0): sync_bill_item (update).
+          2b. If it was deleted (quantity reached 0): remove_bill_item (delete).
+          3. sync_session → Firebase sessions/{session_id} (total_amount).
+          4. append_event_log → Firebase event_log/{push_key}.
+
+        Firebase failure is logged and re-raised so the caller can decide
+        how to handle it.  SQLite state is never rolled back here.
+        """
+        if self._firebase_ref is None:
+            return
+
+        try:
+            bill_item = _billing_get_bill_item(self._session_id, product_id)
+
+            if bill_item is not None:
+                _pid, name, quantity, price, total = bill_item
+                _firebase_sync.sync_bill_item(
+                    session_id=self._session_id,
+                    product_id=product_id,
+                    product_name=name,
+                    quantity=quantity,
+                    price=price,
+                    total=total,
+                    _ref=self._firebase_ref,
+                )
+            else:
+                # Quantity reached zero — SQLite row was deleted; mirror in Firebase.
+                _firebase_sync.remove_bill_item(
+                    session_id=self._session_id,
+                    product_id=product_id,
+                    _ref=self._firebase_ref,
+                )
+
+            self._sync_session_meta()
+
+            log_entry = _billing_get_latest_log(self._session_id)
+            if log_entry is not None:
+                _firebase_sync.append_event_log(
+                    session_id=self._session_id,
+                    timestamp=log_entry[2],
+                    event_type=log_entry[3],
+                    product_id=log_entry[4],
+                    _ref=self._firebase_ref,
+                )
+
+        except Exception:
+            logger.exception(
+                "CartSession._sync_after_remove: Firebase sync failed for "
+                "session=%d product=%d — SQLite state is unchanged",
+                self._session_id, product_id,
+            )
+            raise
+
+    def _sync_session_meta(self) -> None:
+        """
+        Synchronize the current session metadata (total_amount, end_time,
+        cart_id, customer_uid) to Firebase.
+
+        Called after every successful billing mutation and after
+        :meth:`assign_customer`.
+
+        Total calculation
+        -----------------
+        ``billing.add_item()`` and ``billing.remove_item()`` update
+        ``bill_items`` rows but do NOT update ``sessions.total_amount``.
+        We must call ``billing.calculate_total()`` here to recalculate the
+        running total from ``bill_items`` and persist it to the
+        ``sessions`` row before reading via ``get_session_meta()``.
+
+        This follows the documented SQLite-authoritative rule:
+
+            ``SQLite bill_items → calculate current total → sessions.total_amount``
+
+        Silently skips synchronization when no Firebase reference is
+        configured.  Propagates Firebase exceptions to the caller.
+        """
+        if self._firebase_ref is None:
+            return
+
+        # Recalculate and persist the running total to sessions.total_amount.
+        # This is the authoritative SQLite-to-Firebase total pipeline.
+        _billing_calculate_total(self._session_id)
+
+        meta = _billing_get_session_meta(self._session_id)
+        if meta is None:
+            logger.warning(
+                "CartSession._sync_session_meta: session %d not found in "
+                "SQLite; skipping Firebase session sync",
+                self._session_id,
+            )
+            return
+
+        _firebase_sync.sync_session(
+            session_id=meta["session_id"],
+            start_time=meta["start_time"],
+            end_time=meta["end_time"],
+            total_amount=meta["total_amount"],
+            cart_id=meta["cart_id"],
+            customer_uid=meta["customer_uid"],
+            _ref=self._firebase_ref,
+        )

@@ -320,8 +320,11 @@ class TestSyncSession:
         assert node.last_update_data is not None, "update() was not called"
         assert node.last_set_data is None, "set() must not be called by sync_session"
 
-    def test_all_three_approved_fields_present(self):
-        """start_time, end_time, and total_amount must all be present."""
+    def test_all_approved_fields_present(self):
+        """
+        All approved session fields must be present:
+        start_time, end_time, total_amount, cart_id, customer_uid.
+        """
         root = _FakeReference()
         sync_session(
             _SESSION_ID, _SESSION_START, _SESSION_END, _SESSION_TOTAL,
@@ -331,6 +334,8 @@ class TestSyncSession:
         assert "start_time" in data
         assert "end_time" in data
         assert "total_amount" in data
+        assert "cart_id" in data
+        assert "customer_uid" in data
 
     def test_field_values_are_correct(self):
         """Session field values must map exactly from the arguments."""
@@ -360,14 +365,17 @@ class TestSyncSession:
         )
 
     def test_no_unexpected_fields(self):
-        """The session payload must contain exactly the three approved fields."""
+        """
+        The session payload must contain exactly the five approved fields.
+        cart_id and customer_uid are part of the session ownership contract.
+        """
         root = _FakeReference()
         sync_session(
             _SESSION_ID, _SESSION_START, _SESSION_END, _SESSION_TOTAL,
             _ref=root,
         )
         data = root.node(f"sessions/{_SESSION_ID}").last_update_data
-        approved = {"start_time", "end_time", "total_amount"}
+        approved = {"start_time", "end_time", "total_amount", "cart_id", "customer_uid"}
         assert set(data.keys()) == approved, (
             f"Unexpected fields: {set(data.keys()) - approved}"
         )
@@ -381,6 +389,56 @@ class TestSyncSession:
         sync_session(_SESSION_ID, _SESSION_START, None, 0.0, _ref=root)
         data = root.node(f"sessions/{_SESSION_ID}").last_update_data
         assert data["end_time"] is None
+
+    def test_cart_id_included_when_provided(self):
+        """
+        When cart_id is provided, it must appear in the Firebase payload.
+        This supports the Cart → Session → Customer ownership model.
+        """
+        root = _FakeReference()
+        sync_session(
+            _SESSION_ID, _SESSION_START, None, 0.0,
+            cart_id="CART-A1B2",
+            _ref=root,
+        )
+        data = root.node(f"sessions/{_SESSION_ID}").last_update_data
+        assert data["cart_id"] == "CART-A1B2"
+
+    def test_cart_id_none_when_not_provided(self):
+        """
+        When cart_id is not provided, it must be None in the Firebase payload
+        (not omitted — the key must be present).
+        """
+        root = _FakeReference()
+        sync_session(_SESSION_ID, _SESSION_START, None, 0.0, _ref=root)
+        data = root.node(f"sessions/{_SESSION_ID}").last_update_data
+        assert "cart_id" in data
+        assert data["cart_id"] is None
+
+    def test_customer_uid_included_when_provided(self):
+        """
+        When customer_uid is provided, it must appear in the Firebase payload.
+        Firebase security rules use this value to restrict customer access.
+        """
+        root = _FakeReference()
+        sync_session(
+            _SESSION_ID, _SESSION_START, None, 0.0,
+            customer_uid="firebase-uid-xyz",
+            _ref=root,
+        )
+        data = root.node(f"sessions/{_SESSION_ID}").last_update_data
+        assert data["customer_uid"] == "firebase-uid-xyz"
+
+    def test_customer_uid_none_when_not_provided(self):
+        """
+        When customer_uid is not provided, it must be None in the Firebase
+        payload (not omitted — the key must be present).
+        """
+        root = _FakeReference()
+        sync_session(_SESSION_ID, _SESSION_START, None, 0.0, _ref=root)
+        data = root.node(f"sessions/{_SESSION_ID}").last_update_data
+        assert "customer_uid" in data
+        assert data["customer_uid"] is None
 
 
 # ---------------------------------------------------------------------------

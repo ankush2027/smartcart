@@ -20,6 +20,16 @@ def get_connection():
 def initialize_database():
     """
     Create the SmartCart database if it does not already exist.
+
+    Session ownership columns
+    -------------------------
+    ``sessions.cart_id``       — stable physical cart identifier (e.g. QR/NFC ID).
+    ``sessions.customer_uid``  — Firebase Auth UID of the assigned customer.
+
+    Both columns are nullable.  A session may exist before a customer is
+    assigned and before a cart ID is set.  They are populated via
+    :func:`edge.billing.billing.set_session_cart_id` and
+    :func:`edge.billing.billing.assign_customer_to_session`.
     """
 
     connection = get_connection()
@@ -61,9 +71,23 @@ def initialize_database():
             session_id INTEGER PRIMARY KEY AUTOINCREMENT,
             start_time TEXT NOT NULL,
             end_time TEXT,
-            total_amount REAL DEFAULT 0
+            total_amount REAL DEFAULT 0,
+            cart_id TEXT,
+            customer_uid TEXT
         )
     """)
+
+    # Migration: add session-ownership columns to databases created before
+    # cart_id / customer_uid were introduced.
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN cart_id TEXT")
+    except Exception:
+        pass  # column already present — nothing to do
+
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN customer_uid TEXT")
+    except Exception:
+        pass  # column already present — nothing to do
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS session_log (

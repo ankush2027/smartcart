@@ -1,0 +1,21 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "products": {
+      ".read": "auth != null && auth.token.manager === true",
+      ".write": false
+    },
+
+    "sessions": {
+      ".read": false,
+      ".write": false,
+
+      "$session_id": {
+        ".read": "auth != null && (auth.token.manager === true || data.child('customer_uid').val() === auth.uid)",
+        ".write": false
+      }
+    }
+  }
+}
