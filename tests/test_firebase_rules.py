@@ -7,7 +7,7 @@ without connecting to any real Firebase project.
 Coverage:
     - Rules file exists and is valid JSON
     - Root node denies public read/write
-    - products/ grants read only to managers (auth.token.manager == true)
+    - products/ grants read only to managers (auth.token.role == "manager")
     - products/ denies unauthenticated read
     - sessions/$session_id grants read to the customer whose UID matches
       sessions/$session_id/customer_uid
@@ -19,7 +19,7 @@ Coverage:
     - Approved session schema fields are present in documentation
 
 These tests cannot replace live Firebase emulator testing.
-Manual emulator verification is documented in docs/firebase_integration.md.
+Deployment and emulator verification are documented in docs/rtdb_authorization_contract.md.
 """
 
 from __future__ import annotations
@@ -98,14 +98,14 @@ def test_products_node_exists():
 
 def test_products_read_requires_manager_claim():
     """
-    products/ read must require auth.token.manager === true.
+    products/ read must require auth.token.role === 'manager'.
     This prevents unauthenticated and regular customer access.
     """
     rules = _load_rules()["rules"]
     products_read = rules["products"].get(".read", "")
     # The rule must reference manager claim
     assert "manager" in str(products_read), (
-        "products/ .read must check auth.token.manager (manager custom claim)"
+        "products/ .read must check auth.token.role (manager custom claim)"
     )
 
 
@@ -145,12 +145,11 @@ def test_sessions_root_read_is_restricted():
     """
     rules = _load_rules()["rules"]
     sessions_read = rules["sessions"].get(".read", False)
-    # A globally permissive sessions read would be: "auth != null" or true
-    # We want this to be false or absent at the collection level
-    assert sessions_read is False or sessions_read == "false" or sessions_read == "", (
-        "sessions/ must not have a collection-level .read that allows "
-        "downloading all sessions. Customers must only read their own session."
-    )
+    assert sessions_read == (
+        "auth != null && (auth.token.role === 'manager' || "
+        "(query.orderByChild === 'customer_uid' && query.equalTo === auth.uid))"
+    ), "Only managers or an ownership-constrained customer query may read sessions"
+
 
 
 def test_session_id_node_exists():
@@ -235,7 +234,7 @@ def test_approved_session_fields_documented():
 
     This is a structural check — the rules file should use customer_uid
     as the access-control field, which is exactly what we assert above.
-    (The full schema documentation is in docs/firebase_integration.md.)
+    (The full schema documentation is in docs/rtdb_authorization_contract.md.)
     """
     rules = _load_rules()["rules"]
     # Verify customer_uid is used in the session read rule (already tested above)

@@ -319,3 +319,37 @@ class TestCartSessionOwnership:
         assert meta_b["cart_id"] == "CART-B"
         assert meta_a["customer_uid"] == "uid-a"
         assert meta_b["customer_uid"] == "uid-b"
+
+
+class TestOwnershipAuthorizationContract:
+    def test_ownership_survives_billing_sync_and_completion(self):
+        product = _seed_product()
+        root = _FakeReference()
+        session = CartSession(ProductResolver([product]), cart_id="CART-A", firebase_ref=root)
+        session.assign_customer("uid-owner")
+        assert session.process_add([_det()], weight_change=75.0).success
+        node = root.node(f"sessions/{session.session_id}")
+        assert node.last_update_data["customer_uid"] == "uid-owner"
+        assert node.last_update_data["cart_id"] == "CART-A"
+        assert node.last_update_data["total_amount"] == 10.0
+        assert node.last_update_data["end_time"] is None
+        session.complete()
+        assert node.last_update_data["end_time"] is not None
+        assert node.last_update_data["customer_uid"] == "uid-owner"
+        assert get_session_meta(session.session_id)["customer_uid"] == "uid-owner"
+        assert not node.deleted  # Completed history is retained, still owned.
+
+    def test_assignment_sync_failure_does_not_erase_sqlite_ownership(self, monkeypatch):
+        product = _seed_product()
+        root = _FakeReference()
+        session = CartSession(ProductResolver([product]), cart_id="CART-A", firebase_ref=root)
+        node = root.child(f"sessions/{session.session_id}")
+
+        def fail_update(data):
+            raise RuntimeError("simulated sync failure")
+
+        monkeypatch.setattr(node, "update", fail_update)
+        with pytest.raises(RuntimeError, match="simulated sync failure"):
+            session.assign_customer("uid-owner")
+        assert get_session_meta(session.session_id)["customer_uid"] == "uid-owner"
+        assert node.last_update_data is None

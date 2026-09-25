@@ -2,20 +2,20 @@
   "rules": {
     ".read": false,
     ".write": false,
-
     "products": {
-      ".read": "auth != null && auth.token.manager === true",
+      ".read": "auth != null && auth.token.role === 'manager'",
       ".write": false
     },
-
     "sessions": {
-      ".read": false,
+      ".read": "auth != null && (auth.token.role === 'manager' || (query.orderByChild === 'customer_uid' && query.equalTo === auth.uid))",
       ".write": false,
-
       "$session_id": {
-        ".read": "auth != null && (auth.token.manager === true || data.child('customer_uid').val() === auth.uid)",
+        ".read": "auth != null && (auth.token.role === 'manager' || data.child('customer_uid').val() === auth.uid)",
         ".write": false
-      }
+      },
+      ".indexOn": [
+        "customer_uid"
+      ]
     }
   }
 }
