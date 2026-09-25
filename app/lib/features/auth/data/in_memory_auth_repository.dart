@@ -20,13 +20,14 @@ class InMemoryAuthRepository
     required String email,
     required String password,
   }) async {
+    _currentUser = null;
     final role = selectedRole;
     await Future<void>.delayed(delay);
     if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email.trim()) ||
         password.trim().isEmpty) {
       throw const AuthFailure();
     }
-    return _currentUser = AuthUser(role: role);
+    return _currentUser = AuthUser(uid: 'demo-user', role: role);
   }
 
   @override

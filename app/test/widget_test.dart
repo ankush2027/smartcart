@@ -34,7 +34,9 @@ void main() {
   testWidgets('unauthenticated root shows login and validates input', (
     tester,
   ) async {
-    await tester.pumpWidget(const SmartCartApp());
+    await tester.pumpWidget(
+      SmartCartApp(authRepository: InMemoryAuthRepository()),
+    );
     expect(find.text('Welcome Back'), findsOneWidget);
     expect(find.text('Development demo only'), findsOneWidget);
     await tester.ensureVisible(find.text('Sign In'));
@@ -90,7 +92,9 @@ void main() {
   }
 
   testWidgets('password is obscured and can be revealed', (tester) async {
-    await tester.pumpWidget(const SmartCartApp());
+    await tester.pumpWidget(
+      SmartCartApp(authRepository: InMemoryAuthRepository()),
+    );
     final password = find.widgetWithText(TextField, 'Password');
     expect(tester.widget<TextField>(password).obscureText, isTrue);
     await tester.tap(find.byTooltip('Show password'));
@@ -137,7 +141,9 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetViewInsets);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    await tester.pumpWidget(const SmartCartApp());
+    await tester.pumpWidget(
+      SmartCartApp(authRepository: InMemoryAuthRepository()),
+    );
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Sign In'));
     expect(find.text('Sign In').hitTestable(), findsOneWidget);

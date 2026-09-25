@@ -1,10 +1,38 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../data/auth_repository.dart';
 import '../models/auth_user.dart';
 
 class AuthController extends ChangeNotifier {
-  AuthController(this._repository) : _user = _repository.currentUser;
+  AuthController(this._repository) : _user = _repository.currentUser {
+    final repository = _repository;
+    if (repository is AuthStateSource) {
+      _busy = true;
+      _subscription = (repository as AuthStateSource).authStateChanges.listen(
+        (user) {
+          if (_disposed || _operation) return;
+          _user = user;
+          _busy = false;
+          _error = null;
+          notifyListeners();
+        },
+        onError: (Object error) {
+          if (_disposed || _operation) return;
+          _user = null;
+          _busy = false;
+          _error = error is AuthFailure
+              ? error.message
+              : 'Unable to restore your session. Please sign in again.';
+          notifyListeners();
+        },
+      );
+    }
+  }
+
+  StreamSubscription<AuthUser?>? _subscription;
+  bool _operation = false;
 
   final AuthRepository _repository;
   AuthUser? _user;
@@ -30,13 +58,19 @@ class AuthController extends ChangeNotifier {
   Future<void> signIn({required String email, required String password}) async {
     if (_busy || _disposed) return;
     _busy = true;
+    _operation = true;
     _error = null;
+    _user = null;
     notifyListeners();
     try {
       _user = await _repository.signIn(email: email.trim(), password: password);
-    } catch (_) {
-      _error = 'Unable to sign in. Please try again.';
+    } catch (error) {
+      _user = null;
+      _error = error is AuthFailure
+          ? error.message
+          : 'Unable to sign in. Please try again.';
     } finally {
+      _operation = false;
       _busy = false;
       if (!_disposed) notifyListeners();
     }
@@ -45,6 +79,7 @@ class AuthController extends ChangeNotifier {
   Future<void> signOut() async {
     if (_busy || _disposed) return;
     _busy = true;
+    _operation = true;
     _error = null;
     notifyListeners();
     try {
@@ -53,6 +88,7 @@ class AuthController extends ChangeNotifier {
     } catch (_) {
       _error = 'Unable to sign out. Please try again.';
     } finally {
+      _operation = false;
       _busy = false;
       if (!_disposed) notifyListeners();
     }
@@ -61,6 +97,7 @@ class AuthController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _subscription?.cancel();
     super.dispose();
   }
 }

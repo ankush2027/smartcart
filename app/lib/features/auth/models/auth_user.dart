@@ -7,7 +7,9 @@ enum UserRole {
 }
 
 class AuthUser {
-  const AuthUser({required this.role});
+  const AuthUser({required this.uid, required this.role});
 
+  /// Firebase UID in production; never a cart or session identifier.
+  final String uid;
   final UserRole role;
 }

@@ -4,7 +4,7 @@ import 'core/routes/app_routes.dart';
 import 'core/theme/app_theme.dart';
 import 'features/auth/controllers/auth_controller.dart';
 import 'features/auth/data/auth_repository.dart';
-import 'features/auth/data/in_memory_auth_repository.dart';
+import 'features/auth/data/firebase_auth_repository.dart';
 import 'features/customer/data/cart_repository.dart';
 import 'features/customer/data/mock_cart_repository.dart';
 import 'features/manager/data/manager_repository.dart';
@@ -27,9 +27,9 @@ class SmartCartApp extends StatefulWidget {
 }
 
 class _SmartCartAppState extends State<SmartCartApp> {
-  late final AuthController _auth = AuthController(
-    widget.authRepository ?? InMemoryAuthRepository(),
-  );
+  late final AuthRepository _repository =
+      widget.authRepository ?? FirebaseAuthRepository();
+  late final AuthController _auth = AuthController(_repository);
 
   late final CartRepository _cart =
       widget.cartRepository ?? MockCartRepository();
@@ -40,6 +40,9 @@ class _SmartCartAppState extends State<SmartCartApp> {
   @override
   void dispose() {
     _auth.dispose();
+    if (widget.authRepository == null) {
+      (_repository as FirebaseAuthRepository).dispose();
+    }
     super.dispose();
   }
 

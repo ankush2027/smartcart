@@ -85,7 +85,7 @@ void main() {
     'controller reads current session and preserves it on sign-out failure',
     () async {
       final repository = ControlledRepository()
-        ..currentUser = const AuthUser(role: UserRole.manager)
+        ..currentUser = const AuthUser(uid: 'test-user', role: UserRole.manager)
         ..failSignOut = true;
       final controller = AuthController(repository);
       addTearDown(controller.dispose);
@@ -109,7 +109,9 @@ void main() {
       password: 'demo',
     );
     controller.dispose();
-    repository.result.complete(const AuthUser(role: UserRole.customer));
+    repository.result.complete(
+      const AuthUser(uid: 'test-user', role: UserRole.customer),
+    );
     await pending;
   });
 }

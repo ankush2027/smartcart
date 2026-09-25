@@ -1,6 +1,6 @@
 import '../models/auth_user.dart';
 
-/// Replace this implementation with Firebase during the integration stage.
+/// App-level authentication contract; no Firebase types cross this boundary.
 abstract interface class AuthRepository {
   AuthUser? get currentUser;
   Future<AuthUser> signIn({required String email, required String password});
@@ -14,5 +14,12 @@ abstract interface class DevelopmentRoleSelection {
 }
 
 class AuthFailure implements Exception {
-  const AuthFailure();
+  const AuthFailure([this.message = 'Unable to sign in. Please try again.']);
+
+  final String message;
+}
+
+/// Optional live session capability (including the initial restored session).
+abstract interface class AuthStateSource {
+  Stream<AuthUser?> get authStateChanges;
 }

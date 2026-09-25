@@ -24,8 +24,16 @@ abstract final class AppRoutes {
         return user == null
             ? LoginScreen(controller: controller)
             : user.role == UserRole.customer
-            ? CustomerScreen(auth: controller, repository: cartRepository)
-            : ManagerScreen(auth: controller, repository: managerRepository);
+            ? CustomerScreen(
+                key: ValueKey(user.uid),
+                auth: controller,
+                repository: cartRepository,
+              )
+            : ManagerScreen(
+                key: ValueKey(user.uid),
+                auth: controller,
+                repository: managerRepository,
+              );
       },
     ),
   };
