@@ -5,13 +5,23 @@ class ManagedCart {
     required this.status,
     required this.itemCount,
     required this.totalPaise,
-    required this.updatedAt,
+    this.updatedAt,
+    this.cartId,
+    this.customerUid,
+    this.startTime,
+    this.endTime,
   });
   final String sessionId;
   final String status;
   final int itemCount;
   final int totalPaise;
-  final DateTime updatedAt;
+
+  /// Optional: RTDB has no freshness timestamp. Never synthesize one.
+  final DateTime? updatedAt;
+  final String? cartId;
+  final String? customerUid;
+  final DateTime? startTime;
+  final DateTime? endTime;
 }
 
 class ManagerAlert {
@@ -40,7 +50,11 @@ class ManagerEvent {
     required this.message,
     required this.timestamp,
     required this.sessionId,
+    this.eventType,
+    this.productId,
   });
+  final String? eventType;
+  final String? productId;
   final String id;
   final String label;
   final String message;

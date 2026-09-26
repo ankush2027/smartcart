@@ -1,6 +1,6 @@
 # SmartCart mobile application
 
-Stage 6 — Firebase Authentication with mock customer and manager data. Run Flutter commands here:
+Stage 7 — Firebase Authentication and an RTDB repository foundation; customer and manager UI still use mock data. Run Flutter commands here:
 
 ```sh
 flutter pub get
@@ -35,7 +35,7 @@ The repository listens to idTokenChanges for the initial persisted session, user
 
 Firebase calls and errors stay in the data layer. Passwords are cleared from the form on submission and are not logged or stored by the app. Common credential, email, disabled-user, network and throttling errors have safe messages.
 
-The UID is an authentication identity, never a cart ID or session ID. Future Stage 7 authorization will relate `auth.uid` to `session.customer_uid`; no lookup is implemented here. Client routing is presentation control. Future database security rules must enforce actual data access.
+The UID is an authentication identity, never a cart ID or session ID. The Stage 7 customer repository discovers owned sessions through `orderByChild("customer_uid").equalTo(auth.uid)`. Client routing is presentation control. Deployed database security rules enforce actual data access.
 
 ### Real-project manual checks still required
 
@@ -80,3 +80,7 @@ flutter build apk --debug
 Tests cover authentication and logout, preserved Stage 1 content, cart states/retry, item and bill rendering, integer money, repository/controller lifecycle, and smaller screens with increased text scaling.
 
 Android is the development target. iOS scaffolding remains unvalidated. Android uses the approved application ID; launcher icons remain development defaults. This folder belongs to the parent smart-cart Git repository.
+
+## Stage 7 repository foundation
+
+Read-only Firebase customer/manager adapters and offline mapping/listener tests are implemented, but are not wired to production UI. The earlier contract gaps are resolved by backend commit ca522a9 and its user-confirmed deployed rules. Zero active sessions is normal before pairing; multiple active sessions are an integrity conflict. Manager authorization uses role == "manager". Cart ID pairing remains Stage 8. See [Stage 7 contract analysis and integration requirements](STAGE7_RTDB.md) before Stage 8/9. No backend data or Firebase rules were modified.

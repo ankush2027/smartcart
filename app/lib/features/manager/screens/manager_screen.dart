@@ -136,7 +136,8 @@ class _ManagerScreenState extends State<ManagerScreen> {
                 'Status: ${cart.status}',
                 'Items: ${cart.itemCount}',
                 'Bill: ${formatRupees(cart.totalPaise)}',
-                'Updated: ${formatManagerTime(context, cart.updatedAt)}',
+                if (cart.updatedAt != null)
+                  'Updated: ${formatManagerTime(context, cart.updatedAt!)}',
               ],
             ),
           ),
