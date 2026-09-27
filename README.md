@@ -1,5 +1,7 @@
 # SmartCart
 
+Stage 10 software runtime: see [runtime setup, simulation boundary and limitations](docs/stage10_software_runtime.md). Start with `python -m edge.runtime.run_cart --help`; the pairing API remains a separate process.
+
 SmartCart is a smart shopping cart system designed to automate item detection, billing, and shopping activity monitoring.
 
 ## Project Overview

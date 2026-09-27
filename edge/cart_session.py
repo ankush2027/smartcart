@@ -27,7 +27,7 @@ ADD flow
     4. If billing fails → return failure; CartState is still clean.
     5. Call CartState.add() (guaranteed to succeed).
     6. Synchronize to Firebase (bill item + session total + event log).
-    7. Firebase failure is logged but does NOT roll back the SQLite state.
+    7. Firebase failure is logged and re-raised; it does NOT roll back SQLite.
 
 REMOVE flow
     1. Resolve product (ProductResolver.resolve_remove, reads CartState BEFORE).
@@ -37,7 +37,7 @@ REMOVE flow
     5. Call billing.remove_item().
     6. If billing fails → rollback CartState (re-add the item); return failure.
     7. Synchronize to Firebase (bill item updated or deleted + session total + event log).
-    8. Firebase failure is logged but does NOT roll back the SQLite state.
+    8. Firebase failure is logged and re-raised; it does NOT roll back SQLite.
 
 Firebase synchronization point
 -------------------------------
@@ -85,9 +85,10 @@ import logging
 from dataclasses import dataclass
 
 from edge.billing.billing import (
+    InactiveSessionError,
+    get_cart_state_rows as _billing_state_rows,
     add_item as _billing_add,
     assign_customer_to_session as _billing_assign_customer,
-    calculate_total as _billing_calculate_total,
     complete_session as _billing_complete,
     create_session as _billing_create_session,
     get_bill as _billing_get_bill,
@@ -198,9 +199,21 @@ class CartSession:
         self._resolver: ProductResolver = resolver
         self._cart_state: CartState = CartState()
         self._firebase_ref = firebase_ref
+        self._last_mutation_committed = False
 
         if session_id is not None:
             self._session_id: int = session_id
+            rows = _billing_state_rows(session_id)
+            seen = set()
+            for product_id, yolo_class, quantity in rows:
+                if (product_id in seen or not isinstance(yolo_class, str)
+                        or not yolo_class.strip() or not isinstance(quantity, int)
+                        or quantity <= 0):
+                    raise ValueError("Cannot resume invalid SQLite cart state")
+                seen.add(product_id)
+                for _ in range(quantity):
+                    self._cart_state.add(product_id, yolo_class)
+
         else:
             self._session_id = _billing_create_session(cart_id=cart_id)
             if cart_id is not None and session_id is None:
@@ -257,8 +270,13 @@ class CartSession:
         SessionResult
             ``success=True`` when both CartState and billing are updated.
             Firebase sync is attempted after SQLite success; Firebase
-            failures do not change the ``success`` flag.
+            failures raise after commit; inspect ``last_mutation_committed``.
         """
+        self._last_mutation_committed = False
+        meta = _billing_get_session_meta(self._session_id)
+        if meta is None or meta['end_time'] is not None:
+            return SessionResult(False, False, None, None, "Session is missing or completed")
+
         resolution = self._resolver.resolve_add(
             detections=detections,
             weight_change=weight_change,
@@ -276,7 +294,11 @@ class CartSession:
 
         # Billing first: ensures CartState is never ahead of the
         # persistent record if the product is missing from the DB.
-        ok = _billing_add(self._session_id, resolution.product_id)
+        try:
+            ok = _billing_add(self._session_id, resolution.product_id)
+        except InactiveSessionError:
+            return SessionResult(False, True, resolution.product_id, resolution.yolo_class,
+                                 "Session is missing or completed")
         if not ok:
             return SessionResult(
                 success=False,
@@ -291,6 +313,7 @@ class CartSession:
             )
 
         # CartState.add() has no failure path — safe to call after billing.
+        self._last_mutation_committed = True
         self._cart_state.add(resolution.product_id, resolution.yolo_class)
 
         # Firebase sync: after both SQLite and CartState succeed.
@@ -326,9 +349,14 @@ class CartSession:
         SessionResult
             ``success=True`` when both CartState and billing are updated.
             Firebase sync is attempted after SQLite success; Firebase
-            failures do not change the ``success`` flag.
+            failures raise after commit; inspect ``last_mutation_committed``.
         """
         # resolve_remove reads CartState.snapshot() internally.
+        self._last_mutation_committed = False
+        meta = _billing_get_session_meta(self._session_id)
+        if meta is None or meta['end_time'] is not None:
+            return SessionResult(False, False, None, None, "Session is missing or completed")
+
         resolution = self._resolver.resolve_remove(
             detections=detections,
             weight_change=weight_change,
@@ -360,7 +388,11 @@ class CartSession:
             )
 
         # Billing: decrement bill item.
-        ok = _billing_remove(self._session_id, resolution.product_id)
+        try:
+            ok = _billing_remove(self._session_id, resolution.product_id)
+        except Exception:
+            self._cart_state.add(resolution.product_id, resolution.yolo_class)
+            raise
         if not ok:
             # Billing failed after CartState was already decremented.
             # Roll back CartState to restore consistency.
@@ -377,8 +409,8 @@ class CartSession:
                 ),
             )
 
-        # Firebase sync: after both SQLite and CartState succeed.
-        # Firebase failure is logged but does NOT roll back SQLite.
+        self._last_mutation_committed = True
+        # Firebase failure may raise after commit. Never repeat the mutation.
         self._sync_after_remove(resolution.product_id)
 
         return SessionResult(
@@ -426,6 +458,15 @@ class CartSession:
     # ------------------------------------------------------------------
     # Read-only accessors
     # ------------------------------------------------------------------
+
+    @property
+    def last_mutation_committed(self) -> bool:
+        """Outcome of the last process call, including calls that raised.
+
+        Single-owner API: inspect immediately after dispatch. True means the
+        local bill/log/total transaction committed; never replay that mutation.
+        """
+        return self._last_mutation_committed
 
     @property
     def session_id(self) -> int:
@@ -571,27 +612,14 @@ class CartSession:
         Called after every successful billing mutation and after
         :meth:`assign_customer`.
 
-        Total calculation
-        -----------------
-        ``billing.add_item()`` and ``billing.remove_item()`` update
-        ``bill_items`` rows but do NOT update ``sessions.total_amount``.
-        We must call ``billing.calculate_total()`` here to recalculate the
-        running total from ``bill_items`` and persist it to the
-        ``sessions`` row before reading via ``get_session_meta()``.
-
-        This follows the documented SQLite-authoritative rule:
-
-            ``SQLite bill_items → calculate current total → sessions.total_amount``
+        Billing commits bill items, log and total together. Read the committed
+        metadata directly; synchronization must never rewrite SQLite totals.
 
         Silently skips synchronization when no Firebase reference is
         configured.  Propagates Firebase exceptions to the caller.
         """
         if self._firebase_ref is None:
             return
-
-        # Recalculate and persist the running total to sessions.total_amount.
-        # This is the authoritative SQLite-to-Firebase total pipeline.
-        _billing_calculate_total(self._session_id)
 
         meta = _billing_get_session_meta(self._session_id)
         if meta is None:

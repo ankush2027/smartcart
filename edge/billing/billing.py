@@ -21,6 +21,8 @@ functions in this module.  A Firebase failure never causes a SQLite
 rollback (see CartSession for the failure boundary).
 """
 
+from contextlib import contextmanager
+
 from edge.database.database import get_connection
 from edge.database.product_repository import get_product_by_barcode  # noqa: F401 (kept for callers)
 
@@ -163,6 +165,50 @@ def get_session_meta(session_id: int) -> dict | None:
 # Bill-item operations
 # ---------------------------------------------------------------------------
 
+class InactiveSessionError(ValueError):
+    """The authoritative session is missing or completed."""
+
+
+@contextmanager
+def _active_mutation(session_id):
+    connection = get_connection()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT end_time FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if row is None or row[0] is not None:
+            raise InactiveSessionError("Session is missing or completed")
+        yield connection
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _update_total(cursor, session_id):
+    cursor.execute(
+        "SELECT COALESCE(SUM(total), 0) FROM bill_items WHERE session_id = ?",
+        (session_id,),
+    )
+    total = cursor.fetchone()[0]
+    cursor.execute("UPDATE sessions SET total_amount = ? WHERE session_id = ?",
+                   (total, session_id))
+    return total
+
+
+def get_cart_state_rows(session_id):
+    """Read resume quantities/classes in one snapshot; reject corrupt joins."""
+    with _active_mutation(session_id) as connection:
+        return connection.execute(
+            "SELECT b.product_id, p.yolo_class, b.quantity FROM bill_items b "
+            "LEFT JOIN products p ON p.product_id = b.product_id "
+            "WHERE b.session_id = ?", (session_id,)
+        ).fetchall()
+
+
 def add_item(session_id: int, product_id: int) -> bool:
     """
     Add one unit of *product_id* to the bill for *session_id*.
@@ -177,81 +223,79 @@ def add_item(session_id: int, product_id: int) -> bool:
     bool
         ``True`` on success.
         ``False`` when *product_id* does not exist in ``products``
-        (the only failure path — the SQLite write itself is not
-        wrapped in a try/except).
+        Missing/completed sessions raise InactiveSessionError. SQLite errors
+        roll back the transaction and propagate.
     """
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT price
-        FROM products
-        WHERE product_id = ?
-    """, (product_id,))
-
-    product = cursor.fetchone()
-
-    if product is None:
-        connection.close()
-        return False
-
-    price = product[0]
-
-    cursor.execute("""
-        SELECT bill_item_id, quantity
-        FROM bill_items
-        WHERE session_id = ? AND product_id = ?
-    """, (session_id, product_id))
-
-    item = cursor.fetchone()
-
-    if item:
-        bill_item_id, quantity = item
-
-        new_quantity = quantity + 1
-        new_total = price * new_quantity
+    with _active_mutation(session_id) as connection:
+        cursor = connection.cursor()
 
         cursor.execute("""
-            UPDATE bill_items
-            SET quantity = ?,
-                price = ?,
-                total = ?
-            WHERE bill_item_id = ?
-        """, (
-            new_quantity,
-            price,
-            new_total,
-            bill_item_id
-        ))
+            SELECT price
+            FROM products
+            WHERE product_id = ?
+        """, (product_id,))
 
-    else:
+        product = cursor.fetchone()
+
+        if product is None:
+            return False
+
+        price = product[0]
+
         cursor.execute("""
-            INSERT INTO bill_items
-            (session_id, product_id, quantity, price, total)
-            VALUES (?, ?, ?, ?, ?)
+            SELECT bill_item_id, quantity
+            FROM bill_items
+            WHERE session_id = ? AND product_id = ?
+        """, (session_id, product_id))
+
+        item = cursor.fetchone()
+
+        if item:
+            bill_item_id, quantity = item
+
+            new_quantity = quantity + 1
+            new_total = price * new_quantity
+
+            cursor.execute("""
+                UPDATE bill_items
+                SET quantity = ?,
+                    price = ?,
+                    total = ?
+                WHERE bill_item_id = ?
+            """, (
+                new_quantity,
+                price,
+                new_total,
+                bill_item_id
+            ))
+
+        else:
+            cursor.execute("""
+                INSERT INTO bill_items
+                (session_id, product_id, quantity, price, total)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                session_id,
+                product_id,
+                1,
+                price,
+                price
+            ))
+
+        cursor.execute("""
+            INSERT INTO session_log
+            (session_id, timestamp, event_type, product_id, details)
+            VALUES (?, datetime('now'), ?, ?, ?)
         """, (
             session_id,
+            "ADD",
             product_id,
-            1,
-            price,
-            price
+            "Product added to bill"
         ))
 
-    cursor.execute("""
-        INSERT INTO session_log
-        (session_id, timestamp, event_type, product_id, details)
-        VALUES (?, datetime('now'), ?, ?, ?)
-    """, (
-        session_id,
-        "ADD",
-        product_id,
-        "Product added to bill"
-    ))
 
-    connection.commit()
-    connection.close()
-
-    return True
+        _update_total(cursor, session_id)
+        return True
 
 
 def remove_item(session_id: int, product_id: int) -> bool:
@@ -269,66 +313,64 @@ def remove_item(session_id: int, product_id: int) -> bool:
         ``False`` when no ``bill_items`` row exists for this
         ``(session_id, product_id)`` pair.
     """
-    connection = get_connection()
-    cursor = connection.cursor()
+    with _active_mutation(session_id) as connection:
+        cursor = connection.cursor()
 
-    cursor.execute("""
-        SELECT bill_item_id, quantity
-        FROM bill_items
-        WHERE session_id = ? AND product_id = ?
-    """, (session_id, product_id))
-
-    item = cursor.fetchone()
-
-    if item is None:
-        connection.close()
-        return False
-
-    bill_item_id, quantity = item
-
-    if quantity > 1:
         cursor.execute("""
-            SELECT price
+            SELECT bill_item_id, quantity
             FROM bill_items
-            WHERE bill_item_id = ?
-        """, (bill_item_id,))
+            WHERE session_id = ? AND product_id = ?
+        """, (session_id, product_id))
 
-        price = cursor.fetchone()[0]
-        new_quantity = quantity - 1
-        new_total = price * new_quantity
+        item = cursor.fetchone()
+
+        if item is None:
+            return False
+
+        bill_item_id, quantity = item
+
+        if quantity > 1:
+            cursor.execute("""
+                SELECT price
+                FROM bill_items
+                WHERE bill_item_id = ?
+            """, (bill_item_id,))
+
+            price = cursor.fetchone()[0]
+            new_quantity = quantity - 1
+            new_total = price * new_quantity
+
+            cursor.execute("""
+                UPDATE bill_items
+                SET quantity = ?,
+                    total = ?
+                WHERE bill_item_id = ?
+            """, (
+                new_quantity,
+                new_total,
+                bill_item_id
+            ))
+
+        else:
+            cursor.execute("""
+                DELETE FROM bill_items
+                WHERE bill_item_id = ?
+            """, (bill_item_id,))
 
         cursor.execute("""
-            UPDATE bill_items
-            SET quantity = ?,
-                total = ?
-            WHERE bill_item_id = ?
+            INSERT INTO session_log
+            (session_id, timestamp, event_type, product_id, details)
+            VALUES (?, datetime('now'), ?, ?, ?)
         """, (
-            new_quantity,
-            new_total,
-            bill_item_id
+            session_id,
+            "REMOVE",
+            product_id,
+            "Product removed from bill"
         ))
 
-    else:
-        cursor.execute("""
-            DELETE FROM bill_items
-            WHERE bill_item_id = ?
-        """, (bill_item_id,))
 
-    cursor.execute("""
-        INSERT INTO session_log
-        (session_id, timestamp, event_type, product_id, details)
-        VALUES (?, datetime('now'), ?, ?, ?)
-    """, (
-        session_id,
-        "REMOVE",
-        product_id,
-        "Product removed from bill"
-    ))
-
-    connection.commit()
-    connection.close()
-
-    return True
+        _update_total(cursor, session_id)
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -336,39 +378,21 @@ def remove_item(session_id: int, product_id: int) -> bool:
 # ---------------------------------------------------------------------------
 
 def calculate_total(session_id: int) -> float:
-    """
-    Recalculate the running cart total from ``bill_items`` and persist
-    it to ``sessions.total_amount``.
+    """Read the authoritative committed total without mutating billing state.
 
-    This is the single authoritative total calculation.  Firebase sync
-    must use this value — it must not maintain an independent total.
-
-    Returns
-    -------
-    float
-        Current total (0.0 when the bill is empty).
+    ADD/REMOVE and completion maintain this value atomically with bill items.
+    Retains the float return and legacy zero result for a missing session;
+    completed sessions may be read but are never rewritten by this helper.
     """
     connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT COALESCE(SUM(total), 0)
-        FROM bill_items
-        WHERE session_id = ?
-    """, (session_id,))
-
-    total = cursor.fetchone()[0]
-
-    cursor.execute("""
-        UPDATE sessions
-        SET total_amount = ?
-        WHERE session_id = ?
-    """, (total, session_id))
-
-    connection.commit()
-    connection.close()
-
-    return total
+    try:
+        row = connection.execute(
+            "SELECT total_amount FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return float(row[0]) if row is not None else 0.0
+    finally:
+        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -494,22 +518,14 @@ def complete_session(session_id: int) -> float:
     float
         Final total (same value as ``sessions.total_amount``).
     """
-    total = calculate_total(session_id)
-
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        UPDATE sessions
-        SET end_time = datetime('now'),
-            total_amount = ?
-        WHERE session_id = ?
-    """, (total, session_id))
-
-    connection.commit()
-    connection.close()
-
-    return total
+    with _active_mutation(session_id) as connection:
+        cursor = connection.cursor()
+        total = _update_total(cursor, session_id)
+        cursor.execute(
+            "UPDATE sessions SET end_time = datetime('now') WHERE session_id = ?",
+            (session_id,),
+        )
+        return total
 
 
 # ---------------------------------------------------------------------------

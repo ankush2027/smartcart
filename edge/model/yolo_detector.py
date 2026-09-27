@@ -169,6 +169,12 @@ class YOLODetector:
     # ------------------------------------------------------------------
 
     @property
+    def class_names(self) -> tuple[str, ...]:
+        """Model vocabulary for startup validation; never guess class mappings."""
+        names = self._model.names
+        return tuple(names.values()) if isinstance(names, dict) else tuple(names)
+
+    @property
     def confidence_threshold(self) -> float:
         """The currently configured inference confidence threshold."""
         return self._confidence_threshold
