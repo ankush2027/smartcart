@@ -8,7 +8,7 @@ from threading import Event, Thread
 from time import monotonic
 
 from edge.cart_session import CartSession
-from edge.database.product_repository import get_all_products
+from edge.database.product_repository import get_active_products
 from edge.detection.frame_buffer import FrameBuffer
 from edge.detection.motion_pipeline import MotionPipeline
 from edge.detection.product_resolver import ProductInfo, ProductResolver
@@ -38,7 +38,7 @@ def validated_catalog(class_names):
             or len(set(names)) != len(names)):
         raise StartupError('Model vocabulary is empty or ambiguous')
     catalog = []
-    for pid, name, _barcode, price, weight, label in get_all_products():
+    for pid, name, _barcode, price, weight, label in get_active_products():
         if (not isinstance(label, str) or not label.strip()
                 or not isinstance(weight, (int, float)) or not math.isfinite(weight)
                 or weight <= 0 or not isinstance(price, (int, float))

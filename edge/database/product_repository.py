@@ -101,3 +101,25 @@ def get_all_products():
     connection.close()
 
     return products
+
+
+def get_active_products():
+    """Runtime catalog only; preserve the existing six-column tuple contract."""
+    connection = get_connection()
+    try:
+        return connection.execute(
+            'SELECT product_id, name, barcode, price, expected_weight, yolo_class '
+            'FROM products WHERE is_active = 1 ORDER BY product_id').fetchall()
+    finally:
+        connection.close()
+
+
+def get_product_by_id(product_id):
+    """Historical lookup includes retired products; returns six columns or None."""
+    connection = get_connection()
+    try:
+        return connection.execute(
+            'SELECT product_id, name, barcode, price, expected_weight, yolo_class '
+            'FROM products WHERE product_id = ?', (product_id,)).fetchone()
+    finally:
+        connection.close()

@@ -1,0 +1,54 @@
+{
+  "currency": "INR",
+  "model_sha256": "13413bbf0a7c774b6b037bce10be2e16a9d3bbfd30dc2a365840f600e08fd0b3",
+  "products": [
+    {
+      "yolo_class": "1 to 3 Noodles Rs 10",
+      "name": "1 to 3 Noodles",
+      "barcode": null,
+      "price": 10,
+      "expected_weight": 50,
+      "weight_basis": "printed_net_initial_calibration"
+    },
+    {
+      "yolo_class": "1 to 3 Noodles Rs 5",
+      "name": "1 to 3 Noodles",
+      "barcode": null,
+      "price": 5,
+      "expected_weight": 25,
+      "weight_basis": "printed_net_initial_calibration"
+    },
+    {
+      "yolo_class": "Bru",
+      "name": "BRU New Rich Aroma",
+      "barcode": null,
+      "price": 5,
+      "expected_weight": 3.7,
+      "weight_basis": "printed_net_initial_calibration"
+    },
+    {
+      "yolo_class": "Coca Cola",
+      "name": "Coca-Cola Zero Sugar 250 ml",
+      "barcode": null,
+      "price": 10,
+      "expected_weight": 250,
+      "weight_basis": "temporary_prototype_assumption"
+    },
+    {
+      "yolo_class": "Lays",
+      "name": "Lays American Style Cream & Onion",
+      "barcode": null,
+      "price": 10,
+      "expected_weight": 25,
+      "weight_basis": "printed_net_initial_calibration"
+    },
+    {
+      "yolo_class": "Lifebuoy",
+      "name": "Lifebuoy Neem & Aloe",
+      "barcode": null,
+      "price": 10,
+      "expected_weight": 40,
+      "weight_basis": "printed_net_initial_calibration"
+    }
+  ]
+}

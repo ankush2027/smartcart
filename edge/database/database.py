@@ -42,7 +42,8 @@ def initialize_database():
             barcode TEXT UNIQUE,
             price REAL NOT NULL,
             expected_weight REAL NOT NULL,
-            yolo_class TEXT
+            yolo_class TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1
         )
     """)
 
@@ -54,6 +55,10 @@ def initialize_database():
         cursor.execute("ALTER TABLE products ADD COLUMN yolo_class TEXT")
     except Exception:
         pass  # column already present — nothing to do
+
+    # Additive lifecycle migration: retain IDs, metadata and historical references.
+    if 'is_active' not in {row[1] for row in cursor.execute('PRAGMA table_info(products)')}:
+        cursor.execute('ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1')
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bill_items (
