@@ -1,3 +1,5 @@
+import 'package:smartcart/features/customer/data/mock_cart_repository.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -34,7 +36,11 @@ Future<void> showManager(
     () => auth.signIn(email: 'demo@example.test', password: 'demo'),
   );
   await tester.pumpWidget(
-    SmartCartApp(authRepository: auth, managerRepository: repository),
+    SmartCartApp(
+      cartRepository: MockCartRepository(),
+      authRepository: auth,
+      managerRepository: repository,
+    ),
   );
   await tester.pump();
 }

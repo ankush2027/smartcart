@@ -1,3 +1,5 @@
+import 'package:smartcart/features/customer/data/mock_cart_repository.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -35,7 +37,10 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      SmartCartApp(authRepository: InMemoryAuthRepository()),
+      SmartCartApp(
+        cartRepository: MockCartRepository(),
+        authRepository: InMemoryAuthRepository(),
+      ),
     );
     expect(find.text('Welcome Back'), findsOneWidget);
     expect(find.text('Development demo only'), findsOneWidget);
@@ -53,6 +58,7 @@ void main() {
     ) async {
       await tester.pumpWidget(
         SmartCartApp(
+          cartRepository: MockCartRepository(),
           authRepository: InMemoryAuthRepository(delay: Duration.zero),
         ),
       );
@@ -93,7 +99,10 @@ void main() {
 
   testWidgets('password is obscured and can be revealed', (tester) async {
     await tester.pumpWidget(
-      SmartCartApp(authRepository: InMemoryAuthRepository()),
+      SmartCartApp(
+        cartRepository: MockCartRepository(),
+        authRepository: InMemoryAuthRepository(),
+      ),
     );
     final password = find.widgetWithText(TextField, 'Password');
     expect(tester.widget<TextField>(password).obscureText, isTrue);
@@ -106,7 +115,12 @@ void main() {
     'pending sign-in disables submission and safely displays failure',
     (tester) async {
       final repository = PendingRepository();
-      await tester.pumpWidget(SmartCartApp(authRepository: repository));
+      await tester.pumpWidget(
+        SmartCartApp(
+          cartRepository: MockCartRepository(),
+          authRepository: repository,
+        ),
+      );
       expect(find.text('Temporary test role'), findsNothing);
       await enterCredentials(tester);
       await tester.ensureVisible(find.text('Sign In'));
@@ -142,7 +156,10 @@ void main() {
     addTearDown(tester.view.resetViewInsets);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     await tester.pumpWidget(
-      SmartCartApp(authRepository: InMemoryAuthRepository()),
+      SmartCartApp(
+        cartRepository: MockCartRepository(),
+        authRepository: InMemoryAuthRepository(),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Sign In'));

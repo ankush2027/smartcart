@@ -4,6 +4,7 @@ import '../../auth/controllers/auth_controller.dart';
 import '../controllers/cart_controller.dart';
 import '../data/cart_repository.dart';
 import '../models/customer_cart.dart';
+import '../services/cart_pairing_service.dart';
 import '../widgets/bill_summary.dart';
 import '../widgets/cart_item_card.dart';
 
@@ -12,9 +13,11 @@ class CustomerScreen extends StatefulWidget {
     super.key,
     required this.auth,
     required this.repository,
+    this.pairing,
   });
   final AuthController auth;
   final CartRepository repository;
+  final CartPairingService? pairing;
 
   @override
   State<CustomerScreen> createState() => _CustomerScreenState();
@@ -22,16 +25,19 @@ class CustomerScreen extends StatefulWidget {
 
 class _CustomerScreenState extends State<CustomerScreen> {
   late final CartController _cart;
+  final _cartId = TextEditingController();
+  final _form = GlobalKey<FormState>();
 
   @override
   void initState() {
     super.initState();
-    _cart = CartController(widget.repository)..load();
+    _cart = CartController(widget.repository, pairing: widget.pairing)..load();
   }
 
   @override
   void dispose() {
     _cart.dispose();
+    _cartId.dispose();
     super.dispose();
   }
 
@@ -93,20 +99,75 @@ class _CustomerScreenState extends State<CustomerScreen> {
           const SizedBox(height: 16),
           const Text('Loading your cart...', textAlign: TextAlign.center),
         ];
+      case CartLoadState.syncError:
       case CartLoadState.error:
         return [
           Semantics(
             liveRegion: true,
-            child: const Text('Unable to load your cart. Please try again.'),
+            child: Text(
+              _cart.error ?? 'Unable to load your cart. Please try again.',
+            ),
           ),
           const SizedBox(height: 16),
           FilledButton(onPressed: _cart.load, child: const Text('Retry')),
         ];
+      case CartLoadState.connecting:
+        return [
+          const Center(child: CircularProgressIndicator()),
+          const Text(
+            'Connecting to your live cart...',
+            textAlign: TextAlign.center,
+          ),
+        ];
+      case CartLoadState.pairing:
       case CartLoadState.noSession:
         return [
           Text('No active cart', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 8),
           const Text('There is currently no active SmartCart session.'),
+          if (_cart.canPair) ...[
+            const SizedBox(height: 16),
+            Form(
+              key: _form,
+              child: TextFormField(
+                controller: _cartId,
+                enabled: !_cart.pairingBusy,
+                decoration: const InputDecoration(
+                  labelText: 'Enter Cart ID',
+                  border: OutlineInputBorder(),
+                ),
+                autocorrect: false,
+                validator: (value) => value == null || value.trim().isEmpty
+                    ? 'Enter a Cart ID.'
+                    : null,
+              ),
+            ),
+            if (_cart.error != null) ...[
+              const SizedBox(height: 12),
+              Semantics(liveRegion: true, child: Text(_cart.error!)),
+            ],
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: _cart.pairingBusy
+                  ? null
+                  : () {
+                      if (_form.currentState!.validate()) {
+                        FocusScope.of(context).unfocus();
+                        _cart.pair(_cartId.text);
+                      }
+                    },
+              child: _cart.pairingBusy
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        semanticsLabel: 'Connecting cart',
+                      ),
+                    )
+                  : const Text('Connect Cart'),
+            ),
+          ],
         ];
       case CartLoadState.ready:
         final cart = _cart.cart!;
@@ -117,6 +178,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
           ),
           const SizedBox(height: 8),
           Text(cart.displayId),
+          if (cart.cartId != null) Text('Cart ID: ${cart.cartId}'),
           Text(
             'Status: ${cart.status == CartStatus.active ? 'Active' : 'Completed'}',
           ),

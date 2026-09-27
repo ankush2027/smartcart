@@ -5,6 +5,7 @@ import '../../features/auth/screens/login_screen.dart';
 import '../../features/auth/models/auth_user.dart';
 import '../../features/customer/data/cart_repository.dart';
 import '../../features/customer/screens/customer_screen.dart';
+import '../../features/customer/services/cart_pairing_service.dart';
 import '../../features/manager/data/manager_repository.dart';
 import '../../features/manager/screens/manager_screen.dart';
 
@@ -15,8 +16,9 @@ abstract final class AppRoutes {
   static Map<String, WidgetBuilder> routes(
     AuthController controller,
     CartRepository cartRepository,
-    ManagerRepository managerRepository,
-  ) => {
+    ManagerRepository managerRepository, {
+    CartPairingService? pairing,
+  }) => {
     authentication: (_) => ListenableBuilder(
       listenable: controller,
       builder: (context, child) {
@@ -28,6 +30,7 @@ abstract final class AppRoutes {
                 key: ValueKey(user.uid),
                 auth: controller,
                 repository: cartRepository,
+                pairing: pairing,
               )
             : ManagerScreen(
                 key: ValueKey(user.uid),

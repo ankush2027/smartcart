@@ -1,3 +1,5 @@
+import 'package:smartcart/features/customer/data/mock_cart_repository.dart';
+
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
@@ -235,7 +237,12 @@ void main() {
           'widget-uid',
           manager ? {'role': 'manager'} : {},
         );
-        await tester.pumpWidget(SmartCartApp(authRepository: repository));
+        await tester.pumpWidget(
+          SmartCartApp(
+            cartRepository: MockCartRepository(),
+            authRepository: repository,
+          ),
+        );
         await tester.pumpAndSettle();
         expect(find.text('Temporary test role'), findsNothing);
         expect(find.text('Development demo only'), findsNothing);

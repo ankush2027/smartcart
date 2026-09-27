@@ -1,5 +1,7 @@
 # Stage 7: read-only RTDB repository foundation
 
+Historical Stage 7 report: the composition statements below describe Stage 7. Stage 8 now connects the customer UI to Firebase and adds pairing; manager remains mock. See [Stage 8](STAGE8_PAIRING.md).
+
 Production composition in `lib/app.dart` still uses MockCartRepository and MockManagerRepository. Firebase Authentication remains live. No RTDB repository is instantiated by production UI, and no customer/manager controller was switched to streams. SQLite remains authoritative; Flutter has no cart, billing, session, assignment, product or event write API.
 
 ## Final deployed contract — previous gaps RESOLVED

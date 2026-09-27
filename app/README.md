@@ -1,6 +1,6 @@
 # SmartCart mobile application
 
-Stage 7 — Firebase Authentication and an RTDB repository foundation; customer and manager UI still use mock data. Run Flutter commands here:
+Stage 8 — Firebase Authentication, authenticated Cart ID pairing and live customer RTDB carts. Manager monitoring remains mock. See [Stage 8 setup and physical-device checkpoint](STAGE8_PAIRING.md). Run Flutter commands here:
 
 ```sh
 flutter pub get
@@ -52,13 +52,19 @@ A trusted Admin SDK/backend/admin tool must assign manager custom claims. No cla
 
 Customer login opens Customer Cart with session status, repository-provided items, and a Current Bill summary on the same scrollable screen. Manager opens its monitoring dashboard. Both keep authentication-driven logout.
 
-Customer UI → CartController (ChangeNotifier) → CartRepository → MockCartRepository. The Customer controller is disposed on logout; pending loads cannot restore a signed-out view. Inject a different CartRepository through SmartCartApp to replace the data source without changing widgets.
+Customer UI → CartController → FirebaseCartRepository → UID-scoped RTDB stream. With no active session, Cart ID entry calls CartPairingService → fresh Firebase ID token → authenticated POST /pair-cart. Backend SQLite owns assignment; HTTP acknowledges it, and RTDB supplies the displayed cart. No cart is synthesized from the HTTP response.
 
-CustomerCart, CartItem, and CartProduct are client presentation models, independent of backend session or recognition code. Money uses integer paise, formatted separately. The mock alone derives sample line/subtotal/total values. Widgets consume explicit repository totals; authoritative billing remains the backend's responsibility. Item count means total units, not distinct product lines. No tax or discount rules are invented.
+The controller maintains one stream subscription, waits up to 20 seconds for discovery/synchronization, and offers safe retry. Logout or UID changes dispose the screen, input, controller and listener; late results cannot restore its state. Logout does not unpair. Active empty carts remain valid carts. All bill amounts retain Stage 7 integer-paise mapping and supplied authoritative totals.
 
-Names and prices are development fixtures, not a permanent product catalogue. The default mock demonstrates six lines/eight units and ₹130.00. MockCartScenario also supports empty, noSession, and failure fixtures for injection/tests. Loading and safe error/retry states are handled by the controller. The UI clearly labels demo data and makes no live-connectivity claim.
+MockCartRepository is available through explicit injection for offline tests/demos. Production customer data is live; manager data remains mock. There is no checkout, cart editing, QR scanning or client RTDB write API.
 
-Customer data is not connected to Firebase. There is no pairing, live subscription, checkout, cart editing, or backend integration. Cart data loads on entering the Customer screen and on error retry; realtime updates and user/session binding await the backend contract.
+Configure pairing for a physical Android phone on the same LAN:
+
+```sh
+flutter run --dart-define=SMARTCART_API_BASE_URL=http://<EDGE-LAN-IP>:5000
+```
+
+Replace the placeholder locally. The phone's localhost refers to the phone. Missing/invalid configuration produces a controlled error, with no fallback. HTTP is enabled only for debug development builds; release requires HTTPS. See the Stage 8 guide for backend setup and manual verification.
 
 ## Manager monitoring
 
@@ -83,4 +89,4 @@ Android is the development target. iOS scaffolding remains unvalidated. Android 
 
 ## Stage 7 repository foundation
 
-Read-only Firebase customer/manager adapters and offline mapping/listener tests are implemented, but are not wired to production UI. The earlier contract gaps are resolved by backend commit ca522a9 and its user-confirmed deployed rules. Zero active sessions is normal before pairing; multiple active sessions are an integrity conflict. Manager authorization uses role == "manager". Cart ID pairing remains Stage 8. See [Stage 7 contract analysis and integration requirements](STAGE7_RTDB.md) before Stage 8/9. No backend data or Firebase rules were modified.
+Read-only Firebase customer/manager adapters and offline mapping/listener tests are implemented. Stage 8 wires the customer adapter to production; the manager adapter remains unused by production UI. The earlier contract gaps are resolved by backend commit ca522a9 and its user-confirmed deployed rules. Zero active sessions is normal before pairing; multiple active sessions are an integrity conflict. Manager authorization uses role == "manager". Cart ID pairing is now implemented in Stage 8. See [Stage 7 contract analysis and integration requirements](STAGE7_RTDB.md) before Stage 8/9. No backend data or Firebase rules were modified.
