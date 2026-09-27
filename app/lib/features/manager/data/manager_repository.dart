@@ -7,7 +7,7 @@ abstract interface class ManagerRepository {
   Future<ManagerOverview> loadOverview();
 }
 
-/// Optional capability for Stage 9; production still uses mock snapshots.
+/// Live production monitoring; snapshot repositories remain injectable for tests.
 abstract interface class RealtimeManagerRepository
     implements ManagerRepository {
   Stream<ManagerOverview> watchOverview();

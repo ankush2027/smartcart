@@ -1,3 +1,4 @@
+import 'package:smartcart/features/manager/data/mock_manager_repository.dart';
 import 'package:smartcart/features/customer/data/mock_cart_repository.dart';
 
 import 'dart:async';
@@ -239,6 +240,7 @@ void main() {
         );
         await tester.pumpWidget(
           SmartCartApp(
+            managerRepository: MockManagerRepository(),
             cartRepository: MockCartRepository(),
             authRepository: repository,
           ),

@@ -1,4 +1,6 @@
-/// Proposed client presentation fields, not a final backend contract.
+import '../../customer/models/customer_cart.dart';
+
+/// Presentation fields derived from authoritative session data.
 class ManagedCart {
   const ManagedCart({
     required this.sessionId,
@@ -10,7 +12,9 @@ class ManagedCart {
     this.customerUid,
     this.startTime,
     this.endTime,
+    this.items = const [],
   });
+  final List<CartItem> items;
   final String sessionId;
   final String status;
   final int itemCount;
@@ -65,14 +69,17 @@ class ManagerEvent {
 class ManagerOverview {
   ManagerOverview({
     required List<ManagedCart> activeCarts,
+    List<ManagedCart> completedCarts = const [],
     required List<ManagerAlert> alerts,
     required List<ManagerEvent> events,
   }) : activeCarts = List.unmodifiable(activeCarts),
+       completedCarts = List.unmodifiable(completedCarts),
        alerts = List.unmodifiable(alerts),
        events = List.unmodifiable(events);
 
   /// Repository supplies the active-cart and current-alert collections.
   final List<ManagedCart> activeCarts;
+  final List<ManagedCart> completedCarts;
   final List<ManagerAlert> alerts;
   final List<ManagerEvent> events;
 }

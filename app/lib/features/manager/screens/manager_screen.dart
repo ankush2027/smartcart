@@ -4,6 +4,7 @@ import '../../auth/controllers/auth_controller.dart';
 import '../../customer/models/customer_cart.dart' show formatRupees;
 import '../controllers/manager_controller.dart';
 import '../data/manager_repository.dart';
+import '../models/manager_overview.dart';
 import '../widgets/monitoring_card.dart';
 
 class ManagerScreen extends StatefulWidget {
@@ -99,7 +100,10 @@ class _ManagerScreenState extends State<ManagerScreen> {
         return [
           Semantics(
             liveRegion: true,
-            child: const Text('Unable to load manager data. Please try again.'),
+            child: Text(
+              _manager.error ??
+                  'Unable to load manager data. Please try again.',
+            ),
           ),
           const SizedBox(height: 16),
           FilledButton(onPressed: _manager.load, child: const Text('Retry')),
@@ -120,7 +124,9 @@ class _ManagerScreenState extends State<ManagerScreen> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   Text(
-                    'Alerts: ${overview.alerts.length}',
+                    _manager.isDemo
+                        ? 'Alerts: ${overview.alerts.length}'
+                        : 'Completed Sessions: ${overview.completedCarts.length}',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ],
@@ -129,33 +135,32 @@ class _ManagerScreenState extends State<ManagerScreen> {
           ),
           ..._heading(context, 'Active Carts'),
           if (overview.activeCarts.isEmpty) const Text('No active carts'),
-          ...overview.activeCarts.map(
-            (cart) => MonitoringCard(
-              title: 'Cart ${cart.sessionId}',
-              lines: [
-                'Status: ${cart.status}',
-                'Items: ${cart.itemCount}',
-                'Bill: ${formatRupees(cart.totalPaise)}',
-                if (cart.updatedAt != null)
-                  'Updated: ${formatManagerTime(context, cart.updatedAt!)}',
-              ],
+          ...overview.activeCarts.map((cart) => _sessionCard(context, cart)),
+          if (!_manager.isDemo) ...[
+            ..._heading(context, 'Completed Sessions'),
+            if (overview.completedCarts.isEmpty)
+              const Text('No completed sessions'),
+            ...overview.completedCarts.map(
+              (cart) => _sessionCard(context, cart),
             ),
-          ),
-          ..._heading(context, 'Alerts'),
-          const Text('Repository-provided notices for review.'),
-          const SizedBox(height: 12),
-          if (overview.alerts.isEmpty) const Text('No alerts'),
-          ...overview.alerts.map(
-            (alert) => MonitoringCard(
-              icon: Icons.info_outline,
-              title: alert.severity,
-              lines: [
-                'Cart ${alert.sessionId} · ${alert.status}',
-                alert.message,
-                formatManagerTime(context, alert.timestamp),
-              ],
+          ],
+          if (_manager.isDemo) ...[
+            ..._heading(context, 'Alerts'),
+            const Text('Repository-provided notices for review.'),
+            const SizedBox(height: 12),
+            if (overview.alerts.isEmpty) const Text('No alerts'),
+            ...overview.alerts.map(
+              (alert) => MonitoringCard(
+                icon: Icons.info_outline,
+                title: alert.severity,
+                lines: [
+                  'Cart ${alert.sessionId} · ${alert.status}',
+                  alert.message,
+                  formatManagerTime(context, alert.timestamp),
+                ],
+              ),
             ),
-          ),
+          ],
           ..._heading(context, 'Recent Activity'),
           if (overview.events.isEmpty) const Text('No recent activity'),
           ...overview.events.map(
@@ -163,8 +168,12 @@ class _ManagerScreenState extends State<ManagerScreen> {
               icon: Icons.history,
               title: event.label,
               lines: [
-                'Cart ${event.sessionId}',
+                _manager.isDemo
+                    ? 'Cart ${event.sessionId}'
+                    : 'Session ${event.sessionId}',
                 event.message,
+                if (!_manager.isDemo && event.eventType != null)
+                  'Event: ${event.eventType}',
                 formatManagerTime(context, event.timestamp),
               ],
             ),
@@ -172,4 +181,30 @@ class _ManagerScreenState extends State<ManagerScreen> {
         ];
     }
   }
+
+  Widget _sessionCard(BuildContext context, ManagedCart cart) => MonitoringCard(
+    title: _manager.isDemo
+        ? 'Cart ${cart.sessionId}'
+        : 'Session ${cart.sessionId}',
+    lines: [
+      if (!_manager.isDemo) ...[
+        'Cart ID: ${cart.cartId ?? "Not assigned"}',
+        'Customer UID: ${cart.customerUid ?? "Not assigned"}',
+        if (cart.startTime != null)
+          'Started: ${formatManagerTime(context, cart.startTime!)}',
+        if (cart.endTime != null)
+          'Completed: ${formatManagerTime(context, cart.endTime!)}',
+      ],
+      'Status: ${cart.status}',
+      'Items: ${cart.itemCount}',
+      'Bill: ${formatRupees(cart.totalPaise)}',
+      if (cart.updatedAt != null)
+        'Updated: ${formatManagerTime(context, cart.updatedAt!)}',
+      if (!_manager.isDemo) ...[
+        if (cart.items.isEmpty) 'No bill items',
+        for (final item in cart.items)
+          '${item.product.name} · Quantity: ${item.quantity} · Unit: ${formatRupees(item.unitPricePaise)} · Line: ${formatRupees(item.lineTotalPaise)}',
+      ],
+    ],
+  );
 }

@@ -1,6 +1,6 @@
 # SmartCart mobile application
 
-Stage 8 — Firebase Authentication, authenticated Cart ID pairing and live customer RTDB carts. Manager monitoring remains mock. See [Stage 8 setup and physical-device checkpoint](STAGE8_PAIRING.md). Run Flutter commands here:
+Stage 9 — Firebase Authentication, authenticated customer Cart ID pairing, live customer carts and live manager RTDB monitoring. See [Stage 9 manager integration](STAGE9_MANAGER_LIVE.md). See [Stage 8 setup and physical-device checkpoint](STAGE8_PAIRING.md). Run Flutter commands here:
 
 ```sh
 flutter pub get
@@ -56,7 +56,7 @@ Customer UI → CartController → FirebaseCartRepository → UID-scoped RTDB st
 
 The controller maintains one stream subscription, waits up to 20 seconds for discovery/synchronization, and offers safe retry. Logout or UID changes dispose the screen, input, controller and listener; late results cannot restore its state. Logout does not unpair. Active empty carts remain valid carts. All bill amounts retain Stage 7 integer-paise mapping and supplied authoritative totals.
 
-MockCartRepository is available through explicit injection for offline tests/demos. Production customer data is live; manager data remains mock. There is no checkout, cart editing, QR scanning or client RTDB write API.
+MockCartRepository is available through explicit injection for offline tests/demos. Production customer and manager data are live. There is no checkout, cart editing, QR scanning or client RTDB write API.
 
 Configure pairing for a physical Android phone on the same LAN:
 
@@ -68,11 +68,11 @@ Replace the placeholder locally. The phone's localhost refers to the phone. Miss
 
 ## Manager monitoring
 
-Manager UI → ManagerController (ChangeNotifier) → ManagerRepository → MockManagerRepository. The read-only dashboard shows repository-supplied active carts, current alerts, and recent activity. Counts reflect the supplied collections; bill amounts reuse the Customer rupee formatter without recalculation. No detail/editing view is included.
+Manager UI → ManagerController → FirebaseManagerRepository → authorized `/sessions` live stream. Access requires the Stage 6 trusted `role: manager` custom claim and deployed RTDB rules. Production has no mock fallback; MockManagerRepository remains explicitly injectable for demos/tests.
 
-All fixtures are development-only. Alerts and event labels represent backend-originated concepts: Flutter displays messages and performs no theft detection, event classification, or sensor analysis. Manager data remains disconnected from Firebase; mock alerts are presentation/demo data, not real backend theft alerts. The mock supports populated, empty, and failure scenarios; the controller supports loading, safe errors, retry, duplicate-request protection, and disposal on logout.
+The dashboard shows active and completed sessions, cart/customer identity, start/end times, supplied bill items and authoritative totals, plus neutral ADD/REMOVE activity from event logs. Active/completed status derives only from end_time. No alert fields exist in this contract, so production omits the demo alert section. All money remains integer paise; no Firebase writes or theft decisions are added.
 
-Proposed client requirements for later contract review: session display ID, supplied status, item count, authoritative total in paise, update timestamp; alert ID, severity/status labels, message, timestamp and related session; event ID, label, message, timestamp and related session. These are not Firebase paths or a finalized schema. Repository collections must be scoped/ordered appropriately by the future adapter. Timestamps display local date/time; data is a snapshot loaded on entry or retry, not live monitoring.
+Subscriptions bind to the current manager identity and are cancelled on logout/screen disposal. Retry opens a fresh read; old callbacks cannot restore another identity's data. See [Stage 9 architecture, validation and physical-device checkpoint](STAGE9_MANAGER_LIVE.md) for mapping details, empty/error states and limitations.
 
 ## Validation
 
@@ -89,4 +89,4 @@ Android is the development target. iOS scaffolding remains unvalidated. Android 
 
 ## Stage 7 repository foundation
 
-Read-only Firebase customer/manager adapters and offline mapping/listener tests are implemented. Stage 8 wires the customer adapter to production; the manager adapter remains unused by production UI. The earlier contract gaps are resolved by backend commit ca522a9 and its user-confirmed deployed rules. Zero active sessions is normal before pairing; multiple active sessions are an integrity conflict. Manager authorization uses role == "manager". Cart ID pairing is now implemented in Stage 8. See [Stage 7 contract analysis and integration requirements](STAGE7_RTDB.md) before Stage 8/9. No backend data or Firebase rules were modified.
+Read-only Firebase customer/manager adapters and offline mapping/listener tests are implemented. Stage 8 wires the customer adapter to production; Stage 9 wires the manager adapter. The earlier contract gaps are resolved by backend commit ca522a9 and its user-confirmed deployed rules. Zero active sessions is normal before pairing; multiple active sessions are an integrity conflict. Manager authorization uses role == "manager". Cart ID pairing is now implemented in Stage 8. See [Stage 7 contract analysis and integration requirements](STAGE7_RTDB.md) before Stage 8/9. No backend data or Firebase rules were modified.

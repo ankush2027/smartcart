@@ -9,7 +9,7 @@ import 'features/customer/data/cart_repository.dart';
 import 'features/customer/data/firebase_cart_repository.dart';
 import 'features/customer/services/cart_pairing_service.dart';
 import 'features/manager/data/manager_repository.dart';
-import 'features/manager/data/mock_manager_repository.dart';
+import 'features/manager/data/firebase_manager_repository.dart';
 
 class SmartCartApp extends StatefulWidget {
   const SmartCartApp({
@@ -42,13 +42,16 @@ class _SmartCartAppState extends State<SmartCartApp> {
       (widget.cartRepository == null ? HttpCartPairingService() : null);
 
   late final ManagerRepository _manager =
-      widget.managerRepository ?? MockManagerRepository();
+      widget.managerRepository ?? FirebaseManagerRepository(auth: _repository);
 
   @override
   void dispose() {
     _auth.dispose();
     if (widget.cartRepository == null) {
       (_cart as RealtimeCartRepository).dispose();
+    }
+    if (widget.managerRepository == null) {
+      (_manager as RealtimeManagerRepository).dispose();
     }
     if (widget.authRepository == null) {
       (_repository as FirebaseAuthRepository).dispose();

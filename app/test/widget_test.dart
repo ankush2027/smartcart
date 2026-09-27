@@ -1,3 +1,4 @@
+import 'package:smartcart/features/manager/data/mock_manager_repository.dart';
 import 'package:smartcart/features/customer/data/mock_cart_repository.dart';
 
 import 'dart:async';
@@ -38,6 +39,7 @@ void main() {
   ) async {
     await tester.pumpWidget(
       SmartCartApp(
+        managerRepository: MockManagerRepository(),
         cartRepository: MockCartRepository(),
         authRepository: InMemoryAuthRepository(),
       ),
@@ -58,6 +60,7 @@ void main() {
     ) async {
       await tester.pumpWidget(
         SmartCartApp(
+          managerRepository: MockManagerRepository(),
           cartRepository: MockCartRepository(),
           authRepository: InMemoryAuthRepository(delay: Duration.zero),
         ),
@@ -100,6 +103,7 @@ void main() {
   testWidgets('password is obscured and can be revealed', (tester) async {
     await tester.pumpWidget(
       SmartCartApp(
+        managerRepository: MockManagerRepository(),
         cartRepository: MockCartRepository(),
         authRepository: InMemoryAuthRepository(),
       ),
@@ -117,6 +121,7 @@ void main() {
       final repository = PendingRepository();
       await tester.pumpWidget(
         SmartCartApp(
+          managerRepository: MockManagerRepository(),
           cartRepository: MockCartRepository(),
           authRepository: repository,
         ),
@@ -157,6 +162,7 @@ void main() {
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     await tester.pumpWidget(
       SmartCartApp(
+        managerRepository: MockManagerRepository(),
         cartRepository: MockCartRepository(),
         authRepository: InMemoryAuthRepository(),
       ),

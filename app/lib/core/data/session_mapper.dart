@@ -191,18 +191,26 @@ ManagerOverview parseManagerOverview(Object? value) {
     activeCarts: [
       for (final session in sessions)
         if (session.cart.status == CartStatus.active)
-          ManagedCart(
-            sessionId: session.cart.displayId,
-            cartId: session.cart.cartId,
-            customerUid: session.cart.customerUid,
-            startTime: session.cart.startTime,
-            endTime: session.cart.endTime,
-            status: 'Active',
-            itemCount: session.cart.itemCount,
-            totalPaise: session.cart.totalPaise,
-          ),
+          _managedCart(session.cart),
+    ],
+    completedCarts: [
+      for (final session in sessions)
+        if (session.cart.status == CartStatus.completed)
+          _managedCart(session.cart),
     ],
     alerts: const [],
     events: events,
   );
 }
+
+ManagedCart _managedCart(CustomerCart cart) => ManagedCart(
+  sessionId: cart.displayId,
+  cartId: cart.cartId,
+  customerUid: cart.customerUid,
+  startTime: cart.startTime,
+  endTime: cart.endTime,
+  status: cart.status == CartStatus.active ? 'Active' : 'Completed',
+  itemCount: cart.itemCount,
+  totalPaise: cart.totalPaise,
+  items: cart.items,
+);
