@@ -6,7 +6,7 @@ Flow
 1. Validate cart_id (non-empty).
 2. Execute ``pair_and_assign_in_transaction`` — one ``BEGIN IMMEDIATE`` SQLite
    transaction that validates all invariants and performs the ownership
-   assignment.  The transaction commits before this function returns.
+   assignment or fresh session creation. The transaction commits before returning.
 3. If the transaction returns a result, synchronize to Firebase.
 4. Return PairingResult.
 
@@ -86,7 +86,7 @@ class PairingError(Exception):
 # ---------------------------------------------------------------------------
 
 _IC_HTTP: dict[str, int] = {
-    "no_active_session_for_cart":            404,
+    "cart_not_allowed":                     404,
     "multiple_active_sessions_for_cart":     409,
     "multiple_active_sessions_for_customer": 409,
     "customer_already_has_active_session":   409,
@@ -130,7 +130,7 @@ def pair_customer_to_cart(
 
     Transaction boundary
     --------------------
-    All invariant checks and the SQLite ``UPDATE`` are performed inside one
+    Eligibility, invariant checks and SQLite creation/assignment occur inside one
     ``BEGIN IMMEDIATE`` transaction (see ``pair_and_assign_in_transaction``).
     That transaction commits before Firebase sync is attempted.
     """

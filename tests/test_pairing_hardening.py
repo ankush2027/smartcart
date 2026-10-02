@@ -63,6 +63,9 @@ def isolated_db(tmp_path, monkeypatch):
     """Each test gets a fresh SQLite database in a temp directory."""
     temp_db = tmp_path / "test_hardening.db"
     monkeypatch.setattr(_db_module, "DATABASE_PATH", temp_db)
+    monkeypatch.setenv("SMARTCART_ALLOWED_CARTS",
+                      "CART-1,CART-2,CART-A,CART-B,CART-C,CART-DONE,CART-DUP,"
+                      "CART-EDIT,CART-HTTP,CART-LABEL,CART-RACE,CART-TEST,CART-THREAD,CART-TX")
     initialize_database()
     return temp_db
 
@@ -195,20 +198,21 @@ class TestTransactionConflicts:
         result = get_active_session_for_cart("CART-2")
         assert result["customer_uid"] is None
 
-    def test_no_active_session_raises(self):
-        """Cart with no session in SQLite raises no_active_session_for_cart."""
+    def test_ineligible_cart_raises(self):
+        """An unconfigured cart cannot create a session."""
         with pytest.raises(IntegrityConflict) as exc_info:
             pair_and_assign_in_transaction("CART-GHOST", "uid-alice")
-        assert exc_info.value.code == "no_active_session_for_cart"
+        assert exc_info.value.code == "cart_not_allowed"
 
-    def test_completed_session_raises(self):
-        """Completed session (end_time set) is not active; raises."""
+    def test_completed_session_is_not_reused(self):
+        """Completed history stays inactive; pairing creates a new session."""
         sid = create_session(cart_id="CART-1")
         complete_session(sid)
 
-        with pytest.raises(IntegrityConflict) as exc_info:
-            pair_and_assign_in_transaction("CART-1", "uid-alice")
-        assert exc_info.value.code == "no_active_session_for_cart"
+        before = get_session_meta(sid)
+        result = pair_and_assign_in_transaction("CART-1", "uid-alice")
+        assert result.session_id != sid
+        assert get_session_meta(sid) == before
 
     def test_multiple_active_sessions_for_cart_raises(self, db_conn, isolated_db, monkeypatch):
         """Two active sessions for same cart → multiple_active_sessions_for_cart."""
@@ -268,8 +272,8 @@ class TestTransactionRollback:
         meta = get_session_meta(sid)
         assert meta["customer_uid"] == "uid-bob"
 
-    def test_no_write_on_no_active_session_conflict(self):
-        """No partial write when no active session exists."""
+    def test_no_write_on_ineligible_cart_conflict(self):
+        """No partial write for a cart that is not configured."""
         with pytest.raises(IntegrityConflict):
             pair_and_assign_in_transaction("CART-NONE", "uid-x")
         # No sessions modified.
@@ -403,15 +407,17 @@ class TestHTTPTransactionalPath:
         assert resp.status_code == 409
         assert resp.get_json()["error"] == "customer_already_has_active_session"
 
-    def test_http_completed_session_returns_404(self):
-        """POST /pair-cart → completed session → 404 no_active_session_for_cart."""
+    def test_http_completed_session_creates_new_session(self):
+        """POST /pair-cart preserves completion and returns a fresh session."""
         sid = create_session(cart_id="CART-DONE")
         complete_session(sid)
 
         client = _flask_client("uid-alice")
         resp = _pair_http(client, "CART-DONE")
-        assert resp.status_code == 404
-        assert resp.get_json()["error"] == "no_active_session_for_cart"
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "paired"
+        assert resp.get_json()["session_id"] != sid
+        assert get_session_meta(sid)["end_time"] is not None
 
     def test_http_idempotent_returns_already_paired(self):
         """POST /pair-cart idempotent → HTTP 200 already_paired."""

@@ -17,7 +17,7 @@ Pairing
     - cart already assigned to another customer rejected
     - customer already owns another active cart rejected
     - nonexistent cart rejected
-    - cart without active session rejected
+    - eligible cart without active session creates a session
     - completed session not considered active
     - multiple active sessions for cart rejected
     - multiple active sessions for customer rejected
@@ -82,6 +82,7 @@ def isolated_db(tmp_path, monkeypatch):
     """Each test gets a fresh SQLite database in a temp directory."""
     temp_db = tmp_path / "test_pairing.db"
     monkeypatch.setattr(_db_module, "DATABASE_PATH", temp_db)
+    monkeypatch.setenv("SMARTCART_ALLOWED_CARTS", "CART-1,CART-2,CART-A,CART-B,CART-DUP,CART-UNUSED")
     initialize_database()
     return temp_db
 
@@ -362,25 +363,24 @@ class TestPairing:
         assert resp.get_json()["error"] == "customer_already_has_active_session"
 
     def test_nonexistent_cart_id_rejected(self):
-        """A cart_id with no session in SQLite must return 404."""
+        """An ineligible physical cart must return 404 without creation."""
         sync = _CapturingSync()
         client = _make_client("uid-alice", sync)
         resp = _pair(client, "CART-NONEXISTENT")
         assert resp.status_code == 404
-        assert resp.get_json()["error"] == "no_active_session_for_cart"
+        assert resp.get_json()["error"] == "cart_not_allowed"
 
-    def test_cart_without_active_session_rejected(self):
+    def test_cart_without_active_session_created(self):
         """A cart_id that was never used has no active session."""
         # No session created — cart_id has never been used.
         sync = _CapturingSync()
-        result_fn = lambda: pair_customer_to_cart(
+        result = pair_customer_to_cart(
             customer_uid="uid-alice",
             cart_id="CART-UNUSED",
             _firebase_sync_fn=sync,
         )
-        with pytest.raises(PairingError) as exc_info:
-            result_fn()
-        assert exc_info.value.code == "no_active_session_for_cart"
+        assert result.status == "paired"
+        assert get_session_meta(result.session_id)["customer_uid"] == "uid-alice"
 
     def test_completed_session_not_considered_active(self):
         """A completed session (end_time IS NOT NULL) must not be paired."""
@@ -390,8 +390,9 @@ class TestPairing:
         sync = _CapturingSync()
         client = _make_client("uid-alice", sync)
         resp = _pair(client, "CART-1")
-        assert resp.status_code == 404
-        assert resp.get_json()["error"] == "no_active_session_for_cart"
+        assert resp.status_code == 200
+        assert resp.get_json()["session_id"] != sid
+        assert get_session_meta(sid)["end_time"] is not None
 
     def test_multiple_active_sessions_for_cart_rejected(self, db_conn, isolated_db, monkeypatch):
         """Two active sessions for the same cart_id must produce a conflict."""

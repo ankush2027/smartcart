@@ -31,7 +31,9 @@ from edge.database.product_repository import get_product_by_barcode  # noqa: F40
 # Session lifecycle
 # ---------------------------------------------------------------------------
 
-def create_session(cart_id: str | None = None) -> int:
+def create_session(
+    cart_id: str | None = None, *, customer_uid: str | None = None, _conn=None,
+) -> int:
     """
     Create a new shopping session and return its session_id.
 
@@ -41,26 +43,38 @@ def create_session(cart_id: str | None = None) -> int:
         Optional stable physical cart identifier (e.g. QR code value,
         NFC tag ID).  May be ``None`` when the cart has not yet been
         identified — it can be set later via :func:`set_session_cart_id`.
+    customer_uid:
+        Optional verified owner supplied by the protected pairing path.
+    _conn:
+        Optional connection with an active caller-owned transaction. This
+        function neither commits, rolls back nor closes that transaction.
+        Without it, creation commits and closes its own connection as before.
 
     Returns
     -------
     int
         The auto-incremented ``session_id`` of the new row.
     """
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        INSERT INTO sessions (start_time, total_amount, cart_id)
-        VALUES (datetime('now'), 0, ?)
-    """, (cart_id,))
-
-    session_id = cursor.lastrowid
-
-    connection.commit()
-    connection.close()
-
-    return session_id
+    own_conn = _conn is None
+    connection = get_connection() if own_conn else _conn
+    try:
+        if not own_conn and not connection.in_transaction:
+            raise ValueError("Session creation requires an active caller transaction")
+        cursor = connection.execute("""
+            INSERT INTO sessions (start_time, total_amount, cart_id, customer_uid)
+            VALUES (datetime('now'), 0, ?, ?)
+        """, (cart_id, customer_uid))
+        session_id = cursor.lastrowid
+        if own_conn:
+            connection.commit()
+        return session_id
+    except BaseException:
+        if own_conn:
+            connection.rollback()
+        raise
+    finally:
+        if own_conn:
+            connection.close()
 
 
 def set_session_cart_id(session_id: int, cart_id: str) -> None:

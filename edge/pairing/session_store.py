@@ -8,7 +8,7 @@ Responsibilities
     0 active  → return None
     1 active  → return it
     2+ active → raise IntegrityConflict (never silently select one)
-- Execute the full validation + ownership assignment as one protected SQLite
+- Execute validation + session creation/ownership assignment as one protected SQLite
   transaction using ``BEGIN IMMEDIATE``.
 
 Non-responsibilities
@@ -25,7 +25,7 @@ Transaction strategy
 write (reserved) lock at the start of the transaction.  This prevents a second
 concurrent writer from entering the critical section until the first commits or
 rolls back.  All invariant checks (cart lookup, customer lookup, ownership
-check) and the ``UPDATE`` are inside the same connection and transaction, so
+check) and the creation/assignment are inside the same connection and transaction, so
 there is no check-then-write gap between separate connections.
 
 Known limitation: ``BEGIN IMMEDIATE`` on a shared SQLite file will cause a
@@ -44,11 +44,13 @@ file.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
 from edge.database.database import get_connection
+from edge.billing.billing import create_session
 
 logger = logging.getLogger(__name__)
 
@@ -228,21 +230,23 @@ def pair_and_assign_in_transaction(
     _conn=None,
 ) -> TransactionResult:
     """
-    Validate all pairing invariants and assign ownership inside one
+    Validate all pairing invariants and create or assign a session inside one
     ``BEGIN IMMEDIATE`` SQLite transaction.
 
     This is the authoritative mutation entry point.  All invariant checks
     (cart lookup, session-state check, session ownership check, customer
-    uniqueness check) and the ``UPDATE`` occur inside the same connection and
+    uniqueness check) and creation/assignment occur inside the same connection and
     transaction, eliminating the check-then-write gap that existed when these
     were separate operations.
 
     Invariants checked inside the transaction
     -----------------------------------------
-    1. *cart_id* has exactly one active (``end_time IS NULL``) session.
-       Zero  → ``IntegrityConflict(code="no_active_session_for_cart")``
+    1. *cart_id* must be in SMARTCART_ALLOWED_CARTS (default: CART-001).
+       Comma-separated IDs are trimmed, empty entries ignored, case preserved.
+       An explicitly empty configuration allows no carts.
+    2. *cart_id* has at most one active (``end_time IS NULL``) session.
+       Zero  → create a fresh owned session after customer uniqueness checks.
        2+    → ``IntegrityConflict(code="multiple_active_sessions_for_cart")``
-    2. Active session has ``end_time IS NULL`` (defensive re-check).
     3. Customer has at most one active session.
        2+    → ``IntegrityConflict(code="multiple_active_sessions_for_customer")``
     4. If customer owns a different active session:
@@ -296,15 +300,21 @@ def pair_and_assign_in_transaction(
         started = True
 
         # ------------------------------------------------------------------
-        # Invariant 1: exactly one active session for this cart
+        # Eligibility and both ownership lookups share the writer transaction.
         # ------------------------------------------------------------------
+        allowed_carts = {
+            value.strip()
+            for value in os.environ.get("SMARTCART_ALLOWED_CARTS", "CART-001").split(",")
+            if value.strip()
+        }
+        if cart_id not in allowed_carts:
+            raise IntegrityConflict(
+                code="cart_not_allowed",
+                message="This cart is not enabled for pairing on this backend.",
+            )
+        customer_rows = _fetch_active_for_customer(cur, customer_uid)
         cart_rows = _fetch_active_for_cart(cur, cart_id)
 
-        if len(cart_rows) == 0:
-            raise IntegrityConflict(
-                code="no_active_session_for_cart",
-                message=f"No active session found for cart_id={cart_id!r}.",
-            )
         if len(cart_rows) > 1:
             ids = [r[0] for r in cart_rows]
             logger.error(
@@ -319,24 +329,13 @@ def pair_and_assign_in_transaction(
                 ),
             )
 
-        cart_session = _row_to_meta(cart_rows[0])
-        session_id   = cart_session["session_id"]
-        session_owner = cart_session["customer_uid"]
-
-        # ------------------------------------------------------------------
-        # Invariant 2: defensive end_time check (already filtered by SQL)
-        # ------------------------------------------------------------------
-        if cart_session["end_time"] is not None:
-            raise IntegrityConflict(
-                code="no_active_session_for_cart",
-                message=f"No active session found for cart_id={cart_id!r}.",
-            )
+        cart_session = _row_to_meta(cart_rows[0]) if cart_rows else None
+        session_id = cart_session["session_id"] if cart_session else None
+        session_owner = cart_session["customer_uid"] if cart_session else None
 
         # ------------------------------------------------------------------
         # Invariant 3 & 4: customer uniqueness
         # ------------------------------------------------------------------
-        customer_rows = _fetch_active_for_customer(cur, customer_uid)
-
         if len(customer_rows) > 1:
             ids = [r[0] for r in customer_rows]
             logger.error(
@@ -398,12 +397,15 @@ def pair_and_assign_in_transaction(
             )
 
         # ------------------------------------------------------------------
-        # Invariant 7: perform assignment
+        # Invariant 7: create or assign, without leaving this transaction.
         # ------------------------------------------------------------------
-        cur.execute(
-            "UPDATE sessions SET customer_uid = ? WHERE session_id = ?",
-            (customer_uid, session_id),
-        )
+        if cart_session is None:
+            session_id = create_session(cart_id, customer_uid=customer_uid, _conn=conn)
+        else:
+            cur.execute(
+                "UPDATE sessions SET customer_uid = ? WHERE session_id = ?",
+                (customer_uid, session_id),
+            )
 
         conn.commit()
 
