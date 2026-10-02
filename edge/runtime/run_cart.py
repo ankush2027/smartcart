@@ -1,8 +1,10 @@
 """Run explicit software/development cart integration, separate from pairing API."""
 import argparse
 from contextlib import contextmanager
+import errno
 import hashlib
 import logging
+import os
 from pathlib import Path
 import signal
 import tempfile
@@ -22,17 +24,28 @@ _quarantined_locks = []  # Retain ownership after an uncertain shutdown until pr
 
 @contextmanager
 def cart_lock(cart_id):
-    """One cooperating runtime per database/cart on this Unix host."""
-    import fcntl
+    """One cooperating runtime per database/cart on this host."""
     key = hashlib.sha256(f'{DATABASE_PATH.resolve()}:{cart_id}'.encode()).hexdigest()
     path = Path(tempfile.gettempdir()) / f'smartcart-runtime-{key}.lock'
     handle = path.open('a')
     quarantined = False
     try:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError('A runtime already owns this cart') from None
+        if os.name == 'nt':
+            import msvcrt
+            # Every owner locks the same byte, even when the file is empty.
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                raise RuntimeError('A runtime already owns this cart') from None
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError('A runtime already owns this cart') from None
         try:
             yield
         except ShutdownError:
