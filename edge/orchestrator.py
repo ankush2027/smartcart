@@ -12,6 +12,10 @@ correlation whenever a new event arrives.  Stale unmatched
 events are discarded automatically.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from edge.detection.confirmation import (
     confirm_timed_event,
     CORRELATION_WINDOW,
@@ -64,11 +68,13 @@ class EventOrchestrator:
             )
 
             if confirmed is not None:
+                logger.info('Correlation succeeded: %s dt=%.3fs window=%.3fs', confirmed['event_type'], confirmed['time_diff'], self.max_delay)
                 self._pending_weight = None
                 # Do not store this movement — it has been consumed.
                 return confirmed
 
         # No match yet — store as pending, replacing any older one.
+        logger.info('Correlation pending: movement=%s waiting for weight; replaces_previous=%s', movement_event.timestamp.isoformat(), self._pending_movement is not None)
         self._pending_movement = movement_event
         return None
 
@@ -90,11 +96,13 @@ class EventOrchestrator:
             )
 
             if confirmed is not None:
+                logger.info('Correlation succeeded: %s dt=%.3fs window=%.3fs', confirmed['event_type'], confirmed['time_diff'], self.max_delay)
                 self._pending_movement = None
                 # Do not store this weight event — it has been consumed.
                 return confirmed
 
         # No match yet — store as pending, replacing any older one.
+        logger.info('Correlation pending: weight=%s direction=%s waiting for movement; replaces_previous=%s', weight_event.timestamp.isoformat(), weight_event.event_type, self._pending_weight is not None)
         self._pending_weight = weight_event
         return None
 
@@ -112,6 +120,7 @@ class EventOrchestrator:
         )
 
         if age > self.max_delay:
+            logger.info('Correlation missed: expired movement=%s; dt=%.3fs exceeds window=%.3fs', self._pending_movement.timestamp.isoformat(), age, self.max_delay)
             self._pending_movement = None
 
     def _expire_stale_weight(self, reference_time):
@@ -124,6 +133,7 @@ class EventOrchestrator:
         )
 
         if age > self.max_delay:
+            logger.info('Correlation missed: expired weight=%s direction=%s; dt=%.3fs exceeds window=%.3fs', self._pending_weight.timestamp.isoformat(), self._pending_weight.event_type, age, self.max_delay)
             self._pending_weight = None
 
     # ------------------------------------------------------------------

@@ -63,12 +63,16 @@ def setup(tmp_path, monkeypatch):
     return sid, get_all_products()[0][0]
 
 
-def runtime(ref=None):
+# Zero delay isolates existing dispatch/billing tests; delayed acquisition has dedicated coverage.
+def runtime(ref=None, *, recognition_delay=0):
+    from edge.detection.frame_selector import FrameSelector, DEFAULT_WINDOW_END
     detector = Detector()
     session = resume_session('CART-A', detector, ref)
     return CartRuntime(camera=Camera(), motion=Motion(), weights=Weights(),
                        detector=detector, session=session, cart_id='CART-A',
-                       clock=lambda: datetime(2026, 1, 1))
+                       clock=lambda: datetime(2026, 1, 1), recognition_delay=recognition_delay,
+                       frame_selector=FrameSelector(window_start=recognition_delay,
+                           window_end=0 if recognition_delay == 0 else DEFAULT_WINDOW_END, scorer=lambda frame: 0))
 
 
 def acquire(rt, delta=None, movement=True, offset=0):

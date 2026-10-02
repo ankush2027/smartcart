@@ -33,7 +33,7 @@ bounded in-process queue → one serial worker → existing YOLODetector
        → existing ProductResolver → CartState + SQLite billing → existing Firebase sync
 ```
 
-The MOG2 extraction preserves history 500, variance threshold 50, shadows, 5×5 morphology, area >500, five qualifying frames and once-per-gesture behavior. The standalone MOG2 demo remains. Recognition frames are copied before buffering and never annotated. Existing frame selection remains nearest movement timestamp, 30-frame capacity and two-second match age; confirmation remains the original one-second rule.
+The MOG2 extraction preserves history 500, variance threshold 50, shadows, 5×5 morphology, area >500, five qualifying frames and once-per-gesture behavior. The standalone MOG2 demo remains. Recognition frames are copied before buffering and never annotated. The underlying MotionPipeline nearest-frame API retains its 30-frame capacity and two-second match age; confirmation remains the original one-second rule. Runtime recognition now uses the bounded post-movement policy described below.
 
 The runtime accepts injected camera, motion processor, weight source, detector, CartSession, result callback and clock. A weight source implements `poll()` returning a WeightEvent or None and `close()`. Future physical sampling replaces this adapter, not the orchestration or billing implementation.
 
@@ -100,3 +100,51 @@ REMOVE operations and verify items, logs and totals remain consistent.
 Injected blocking-camera, detector and cleanup tests exercise the shared shutdown
 deadline, release-assisted clean shutdown, prevention of late inference billing,
 and retained cart ownership after an uncertain shutdown.
+
+
+## Event-aware recognition selection
+
+Physical saved-frame evidence showed that movement-confirmation images could
+precede product entry, while a +0.518-second image improved visibility but was
+blurred. Runtime and diagnostic now share `RecognitionFrames` and the independent
+`FrameSelector`. The inclusive candidate window defaults to movement +0.3 through
++0.8 seconds, encompassing the useful +0.5-second region. Both CLIs expose
+`--recognition-window-start`, `--recognition-window-end`, and
+`--recognition-wait` (default 1.5 seconds from correlation). The previous
+`--recognition-delay` flag remains an alias for window start.
+
+Acquisition/MOG2/stdin/correlation continue while the window fills, without sleeps
+or continuous inference. Once a frame timestamp reaches the window end, the
+selector scores eligible frames retained in the existing 30-frame buffer using
+variance of the grayscale Laplacian, downscaled to a maximum dimension of 320
+pixels. Highest score wins; equal scores choose the earliest timestamp, then
+buffer order for identical timestamps. Scoring is bounded by buffer capacity and
+image dimensions, and never edits the source image. It runs briefly on the
+acquisition thread after the window completes, outside the pending-state lock.
+YOLO runs once on the selected original frame through the existing worker.
+
+Sharpness is not a guarantee of product visibility or correct recognition.
+There is no minimum quality threshold or product-specific heuristic. One retained
+candidate is sufficient. High frame rates or late correlation can evict earlier
+candidates; selection considers only the retained eligible frames. No buffer
+capacity/FPS assumption or recognition threshold is changed.
+
+Pending selections remain bounded to eight and protected by a short metadata
+lock. Original movement/weight timestamps and correlation delta are retained
+alongside window bounds, selected timestamp/delta, score and candidate count.
+Duplicate/out-of-order confirmations cannot queue another selection. Zero
+candidates, scoring errors, overflow or deadline expiry halt without dispatching
+the affected event. There is no early-frame fallback or automatic retry.
+
+The supervisor checks the monotonic deadline every 0.1 seconds, including while
+camera/scoring is blocked, then uses existing bounded shutdown/cleanup. Stop
+cancels pending selection. Scoring returning after cancellation cannot dispatch.
+Already-dispatched work retains existing completion semantics. Native calls
+holding the GIL indefinitely remain a process-level interruption limitation.
+
+The no-billing diagnostic uses exactly the same selector, prints temporal
+metadata and candidate scores, saves the selected original pixels as lossless
+PNG, infers once, and exits. Its synchronous camera read retains the existing
+native-call interruption limitation; expiry is rejected when control returns.
+No database or Firebase module is imported. Visual verification is required
+before any separately approved physical billing retry.

@@ -12,6 +12,9 @@ from edge.firebase.client import initialize, get_reference
 from edge.model.yolo_detector import DEFAULT_MODEL_PATH, YOLODetector
 from edge.runtime.cart_runtime import CartRuntime, ShutdownError, resume_session, validate_model_path
 from edge.runtime.weight_source import StdinSimulatedWeightSource
+from edge.runtime.diagnostics import log_exception
+from edge.detection.frame_selector import DEFAULT_WINDOW_END
+from edge.runtime.recognition_frames import DEFAULT_RECOGNITION_DELAY, DEFAULT_RECOGNITION_WAIT
 
 
 _quarantined_locks = []  # Retain ownership after an uncertain shutdown until process exit.
@@ -52,6 +55,9 @@ def main(argv=None):
     parser.add_argument('--camera-index', type=int, default=0)
     parser.add_argument('--simulate-weight', action='store_true', required=True,
                         help='Explicit development mode: enter signed gram changes on stdin')
+    parser.add_argument('--recognition-window-start', '--recognition-delay', dest='recognition_delay', type=float, default=DEFAULT_RECOGNITION_DELAY)
+    parser.add_argument('--recognition-window-end', type=float, default=DEFAULT_WINDOW_END)
+    parser.add_argument('--recognition-wait', type=float, default=DEFAULT_RECOGNITION_WAIT)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -74,6 +80,7 @@ def main(argv=None):
             camera = open_camera(args.camera_index)
             runtime = CartRuntime(camera=camera, motion=motion, weights=weights,
                                   detector=detector, session=session, cart_id=cart_id,
+                                  recognition_delay=args.recognition_delay, recognition_wait=args.recognition_wait, recognition_window_end=args.recognition_window_end,
                                   on_outcome=lambda result: logger.info(
                                       'Event %s: %s (%s)', result.event_type,
                                       result.status, result.detail))
@@ -88,12 +95,12 @@ def main(argv=None):
             if runtime.failed.is_set():
                 raise RuntimeError('Runtime halted; inspect/reconcile cart before restarting')
     except Exception as error:
-        # SDK errors may contain configuration details; retain only safe startup messages.
+        # Expected startup errors stay concise; unexpected failures retain safe traces.
         from edge.runtime.cart_runtime import StartupError
         if isinstance(error, StartupError):
             logger.error('%s', error)
         else:
-            logger.error('Runtime stopped (%s). Check devices, active session, model/catalog and Firebase configuration; do not replay uncertain events.', type(error).__name__)
+            log_exception(logger, 'Runtime stopped; do not replay uncertain events.', error)
         return 1
     return 0
 

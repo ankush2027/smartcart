@@ -2,11 +2,15 @@
 from dataclasses import dataclass
 from datetime import datetime
 import math
+import logging
 from pathlib import Path
 from queue import Queue, Empty, Full
 from threading import Event, Thread
 from time import monotonic
 
+from edge.runtime.diagnostics import log_exception
+from edge.runtime.recognition_frames import RecognitionFrames, DEFAULT_RECOGNITION_DELAY, DEFAULT_RECOGNITION_WAIT
+from edge.detection.frame_selector import DEFAULT_WINDOW_END
 from edge.cart_session import CartSession
 from edge.database.product_repository import get_active_products
 from edge.detection.frame_buffer import FrameBuffer
@@ -14,6 +18,9 @@ from edge.detection.motion_pipeline import MotionPipeline
 from edge.detection.product_resolver import ProductInfo, ProductResolver
 from edge.orchestrator import EventOrchestrator
 from edge.pairing.session_store import get_active_session_for_cart
+
+
+logger = logging.getLogger(__name__)
 
 
 class ShutdownError(RuntimeError):
@@ -73,7 +80,10 @@ class DispatchOutcome:
 class CartRuntime:
     def __init__(self, *, camera, motion, weights, detector, session, cart_id,
                  on_outcome=lambda outcome: None, queue_size=8, clock=datetime.now,
-                 max_event_age=30.0, shutdown_timeout=5.0):
+                 max_event_age=30.0, shutdown_timeout=5.0,
+                 recognition_delay=DEFAULT_RECOGNITION_DELAY,
+                 recognition_wait=DEFAULT_RECOGNITION_WAIT, selection_clock=monotonic,
+                 recognition_window_end=DEFAULT_WINDOW_END, frame_selector=None):
         self.camera, self.motion, self.weights = camera, motion, weights
         self.detector, self.session, self.cart_id = detector, session, cart_id
         self.on_outcome = on_outcome
@@ -84,7 +94,11 @@ class CartRuntime:
         self.max_event_age = max_event_age
         self._last_movement = None
         self._last_weight = None
-        self.pipeline = MotionPipeline(FrameBuffer(), EventOrchestrator())
+        self.frame_buffer = FrameBuffer()
+        self.pipeline = MotionPipeline(self.frame_buffer, EventOrchestrator())
+        self.recognition_frames = RecognitionFrames(delay=recognition_delay, max_wait=recognition_wait,
+                                                     capacity=queue_size, clock=selection_clock,
+                                                     window_end=recognition_window_end, selector=frame_selector)
         if queue_size < 1:
             raise ValueError("queue_size must be positive")
         self.jobs = Queue(maxsize=queue_size)
@@ -101,13 +115,26 @@ class CartRuntime:
         timestamp = timestamp or self.clock()
         # Retain an unannotated, independent frame even if a camera reuses memory.
         raw = frame.copy()
+        was_active = getattr(self.motion, 'movement_active', False)
         movement = self.motion.process(raw, timestamp=timestamp)
+        if was_active and not getattr(self.motion, 'movement_active', False):
+            logger.info('Motion reset: detector rearmed')
+        if movement is not None:
+            logger.info('Movement received: timestamp=%s; detector latched until reset', movement.timestamp.isoformat())
         weight = self.weights.poll()
+        if weight is not None:
+            logger.info('Simulated weight received: delta=%+g g direction=%s timestamp=%s',
+                        weight.weight_change, weight.event_type, weight.timestamp.isoformat())
         result = self.pipeline.process_frame(raw, movement_event=movement,
                                              weight_event=weight, timestamp=timestamp)
-        if result is not None and not self.stopping.is_set():
+        if self.stopping.is_set():
+            return
+        for result in self.recognition_frames.update(result, self.frame_buffer):
+            if self.stopping.is_set():
+                return
             try:
                 self.jobs.put_nowait(result)
+                logger.info('Dispatch job queued: %s frame_present=%s', result['confirmed']['event_type'], result['frame'] is not None)
             except Full:
                 self.failed.set()
                 self.stopping.set()
@@ -146,18 +173,23 @@ class CartRuntime:
             return DispatchOutcome('unresolved', kind, 'No matched frame')
         try:
             detections = self.detector.detect(frame) if frame is not None else []
-        except Exception:
+        except Exception as error:
+            log_exception(logger, 'Recognition failed; nothing billed.', error)
             return DispatchOutcome('rejected', kind, 'Recognition failed; nothing billed')
+        logger.info('Recognition result: %s', [(d.yolo_class, round(d.confidence, 4)) for d in detections])
         if self.failed.is_set():
             return DispatchOutcome('rejected', kind, 'Runtime halted before billing')
         try:
             method = self.session.process_add if kind == 'ADD' else self.session.process_remove
             result = method(detections, delta)
-        except Exception:
+        except Exception as error:
+            log_exception(logger, 'CartSession failed; do not replay uncertain events.', error)
             if self.session.last_mutation_committed:
                 return DispatchOutcome('committed_sync_failed', kind,
                                        'Local mutation committed; do not replay; reconcile Firebase')
             return DispatchOutcome('rejected', kind, 'Local mutation failed; reconcile before resuming')
+        logger.info('Resolver/session result: direction=%s resolved=%s success=%s reason=%s',
+                    kind, result.resolved, result.success, result.reason)
         if result.success:
             return DispatchOutcome('committed', kind)
         return DispatchOutcome('unresolved' if not result.resolved else 'rejected',
@@ -176,8 +208,11 @@ class CartRuntime:
                     continue  # fail-stop: never apply queued events after uncertainty
                 try:
                     outcome = self.dispatch(job)
-                except Exception:
+                except Exception as error:
+                    log_exception(logger, 'Dispatch failed; do not replay uncertain events.', error)
                     outcome = DispatchOutcome('rejected', 'UNKNOWN', 'Dispatch failed; reconcile cart')
+                logger.info('Billing/dispatch outcome: %s status=%s detail=%s',
+                            outcome.event_type, outcome.status, outcome.detail)
                 # Stop after any unresolved/rejected/partial event: physical and
                 # billed contents may now differ. No guessed continuation.
                 if outcome.status not in ('committed', 'ignored'):
@@ -185,7 +220,8 @@ class CartRuntime:
                     self.stopping.set()
                 try:
                     self.on_outcome(outcome)
-                except Exception:
+                except Exception as error:
+                    log_exception(logger, 'Outcome reporting failed; do not replay uncertain events.', error)
                     self.failed.set()
                     self.stopping.set()
             finally:
@@ -193,6 +229,7 @@ class CartRuntime:
 
     def stop(self):
         self.stopping.set()
+        self.recognition_frames.cancel()
 
     def run(self):
         if self._worker is not None:
@@ -221,7 +258,11 @@ class CartRuntime:
         self._worker.start()
         self._acquisition.start()
         try:
-            self.stopping.wait()
+            while not self.stopping.wait(0.1):
+                self.recognition_frames.check_timeout()
+        except BaseException:
+            self.failed.set()
+            raise
         finally:
             self.stop()
             deadline = monotonic() + self.shutdown_timeout
@@ -231,6 +272,7 @@ class CartRuntime:
                 try:
                     close()
                 except BaseException as error:
+                    log_exception(logger, 'Resource cleanup failed.', error)
                     cleanup_errors.put(error)
 
             # Release can unblock capture, but release itself may be native/blocking.

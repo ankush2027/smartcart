@@ -64,4 +64,7 @@ class StdinSimulatedWeightSource(SimulatedWeightSource):
         if '\n' not in self._pending:
             return None
         line, self._pending = self._pending.split('\n', 1)
-        return self.inject_delta(float(line.strip()))
+        line = line.strip()
+        if not line:
+            return None  # Blank record is not a delta or EOF.
+        return self.inject_delta(float(line))

@@ -34,3 +34,5 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+# Opt-in selected-frame diagnostic images
+/data/diagnostics/
