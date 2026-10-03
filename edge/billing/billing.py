@@ -92,15 +92,9 @@ def set_session_cart_id(session_id: int, cart_id: str) -> None:
     cart_id:
         Stable physical cart identifier string.
     """
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        UPDATE sessions SET cart_id = ? WHERE session_id = ?
-    """, (cart_id, session_id))
-
-    connection.commit()
-    connection.close()
+    with _active_mutation(session_id, shopping=True) as connection:
+        connection.execute('UPDATE sessions SET cart_id = ? WHERE session_id = ?',
+                           (cart_id, session_id))
 
 
 def assign_customer_to_session(session_id: int, customer_uid: str) -> None:
@@ -118,15 +112,9 @@ def assign_customer_to_session(session_id: int, customer_uid: str) -> None:
     customer_uid:
         Firebase Auth UID of the authenticated customer.
     """
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        UPDATE sessions SET customer_uid = ? WHERE session_id = ?
-    """, (customer_uid, session_id))
-
-    connection.commit()
-    connection.close()
+    with _active_mutation(session_id, shopping=True) as connection:
+        connection.execute('UPDATE sessions SET customer_uid = ? WHERE session_id = ?',
+                           (customer_uid, session_id))
 
 
 def get_session_meta(session_id: int) -> dict | None:
@@ -183,16 +171,22 @@ class InactiveSessionError(ValueError):
     """The authoritative session is missing or completed."""
 
 
+class CheckoutFrozenError(InactiveSessionError):
+    """Checkout has frozen this session; shopping cannot resume."""
+
+
 @contextmanager
-def _active_mutation(session_id):
+def _active_mutation(session_id, *, shopping=False):
     connection = get_connection()
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
-            "SELECT end_time FROM sessions WHERE session_id = ?", (session_id,)
+            "SELECT end_time, checkout_started_at FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         if row is None or row[0] is not None:
             raise InactiveSessionError("Session is missing or completed")
+        if shopping and row[1] is not None:
+            raise CheckoutFrozenError("Session checkout is frozen")
         yield connection
         connection.commit()
     except BaseException:
@@ -215,7 +209,7 @@ def _update_total(cursor, session_id):
 
 def get_cart_state_rows(session_id):
     """Read resume quantities/classes in one snapshot; reject corrupt joins."""
-    with _active_mutation(session_id) as connection:
+    with _active_mutation(session_id, shopping=True) as connection:
         return connection.execute(
             "SELECT b.product_id, p.yolo_class, b.quantity FROM bill_items b "
             "LEFT JOIN products p ON p.product_id = b.product_id "
@@ -240,7 +234,7 @@ def add_item(session_id: int, product_id: int) -> bool:
         Missing/completed sessions raise InactiveSessionError. SQLite errors
         roll back the transaction and propagate.
     """
-    with _active_mutation(session_id) as connection:
+    with _active_mutation(session_id, shopping=True) as connection:
         cursor = connection.cursor()
 
         cursor.execute("""
@@ -327,7 +321,7 @@ def remove_item(session_id: int, product_id: int) -> bool:
         ``False`` when no ``bill_items`` row exists for this
         ``(session_id, product_id)`` pair.
     """
-    with _active_mutation(session_id) as connection:
+    with _active_mutation(session_id, shopping=True) as connection:
         cursor = connection.cursor()
 
         cursor.execute("""

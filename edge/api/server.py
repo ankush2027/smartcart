@@ -9,6 +9,8 @@ Endpoints
 POST /pair-cart
     Pair an authenticated Firebase customer with a physical cart/session.
     See: docs/pairing_endpoint.md
+POST /sessions/{session_id}/checkout
+    Freeze the verified owner's authoritative bill. See: docs/checkout.md
 
 Architecture
 ------------
@@ -41,11 +43,14 @@ Usage (testing)
 from __future__ import annotations
 
 import logging
+import sqlite3
+from dataclasses import asdict
 
 from flask import Flask, jsonify, request
 
 from edge.pairing.pair_cart import PairingError, pair_customer_to_cart
 from edge.pairing.token_verifier import TokenVerificationError, verify_id_token
+from edge.billing.checkout import begin_checkout, CheckoutError
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +192,30 @@ def create_app(
             "cart_id":    result.cart_id,
             "status":     result.status,
         }), 200
+
+    @app.route('/sessions/<session_id>/checkout', methods=['POST'])
+    def checkout(session_id):
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return _error_response('authentication_required', 'Bearer token required.', 401)
+        try:
+            uid = _do_verify_token(auth_header[len('Bearer '):], _token_verifier)
+        except TokenVerificationError as exc:
+            return _error_response(exc.code, exc.message,
+                                   401 if exc.code == 'authentication_required' else 403)
+        if request.get_json(silent=True) != {}:
+            return _error_response('invalid_request', 'Body must be an empty JSON object.', 400)
+        if not session_id.isascii() or not session_id.isdecimal() or len(session_id) > 19:
+            return _error_response('invalid_session_id', 'Invalid session ID.', 400)
+        try:
+            result = begin_checkout(int(session_id), uid)
+        except CheckoutError as exc:
+            return _error_response(exc.code, exc.message, exc.http_status)
+        except sqlite3.Error:
+            return _error_response('database_unavailable', 'Checkout unavailable; retry safely.', 503)
+        except Exception:
+            return _error_response('internal_error', 'Checkout could not be confirmed.', 500)
+        return jsonify(asdict(result)), 200
 
     return app
 

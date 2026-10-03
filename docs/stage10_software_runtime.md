@@ -19,7 +19,13 @@ python -m edge.runtime.run_cart \
 
 All values above are placeholders/examples. Use the same backend checkout/SQLite file as the separately running pairing API (`python -m edge.api.run_server`). The runtime does not start that server, assign a customer, create a session, or complete a session on exit. Pair the authenticated customer through `POST /pair-cart` first: an allowed cart with no active session now gets a fresh owned session automatically. `SMARTCART_ALLOWED_CARTS` defaults to `CART-001`; see [pairing configuration](pairing_endpoint.md#allowed-physical-carts). Then start this runtime to resume that session. Missing, completed-only, or multiple active sessions still fail closed. A local advisory lock prevents two cooperating runtimes from owning the same database/cart on this host.
 
-Completion preserves the old session and makes the cart logically available for a new pairing. A running runtime does not switch session IDs: dispatch rejects a changed active session and halts. Perform controlled shutdown/restart before serving the next customer's session. Runtime turnover, checkout/payment and automatic Firebase repair remain separate work. Neither app close/logout nor runtime exit completes an unpaid session.
+Completion preserves the old session and makes the cart logically available for a new pairing. A running runtime does not switch session IDs: dispatch rejects a changed active session and halts. Perform controlled shutdown/restart before serving the next customer's session. Runtime turnover, payment and automatic Firebase repair remain separate work. Neither app close/logout nor runtime exit completes an unpaid session.
+
+[Checkout freeze](checkout.md) retains ownership and rejects runtime startup/resume.
+ADD/REMOVE check the persisted freeze in their billing transaction, including work
+recognized before checkout. A frozen rejection uses the existing fail-stop behavior;
+queued events are discarded and rejected REMOVE restores memory. Upgrade all writers
+together: old binaries ignore the freeze. Checkout does not complete the session.
 
 `--simulate-weight` is mandatory and startup visibly reports SIMULATED WEIGHT. In the terminal enter signed gram deltas, e.g. `75` or `-75`, while moving the corresponding item in camera view. Existing timed confirmation requires both signals within one second. The simulation starts at `--initial-weight` grams (default 500); choose a baseline that supports the intended simulated removals. Subthreshold changes accumulate against the last emitted-event baseline. Invalid/non-finite input or negative simulated totals stop the runtime. EOF stops it; Ctrl-C/SIGTERM requests graceful shutdown. No manual Python ADD/REMOVE call is needed per event.
 

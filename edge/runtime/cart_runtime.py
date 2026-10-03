@@ -12,6 +12,7 @@ from edge.runtime.diagnostics import log_exception
 from edge.runtime.recognition_frames import RecognitionFrames, DEFAULT_RECOGNITION_DELAY, DEFAULT_RECOGNITION_WAIT
 from edge.detection.frame_selector import DEFAULT_WINDOW_END
 from edge.cart_session import CartSession
+from edge.billing.billing import CheckoutFrozenError
 from edge.database.product_repository import get_active_products
 from edge.detection.frame_buffer import FrameBuffer
 from edge.detection.motion_pipeline import MotionPipeline
@@ -66,8 +67,11 @@ def resume_session(cart_id, detector, firebase_ref):
     if meta is None:
         raise StartupError('No active session for this cart; start one through the existing lifecycle')
     # Ownership is read from SQLite by existing sync. Never assign a UID here.
-    return CartSession(ProductResolver(catalog), session_id=meta['session_id'],
-                       firebase_ref=firebase_ref)
+    try:
+        return CartSession(ProductResolver(catalog), session_id=meta['session_id'],
+                           firebase_ref=firebase_ref)
+    except CheckoutFrozenError:
+        raise StartupError('Session checkout is frozen; shopping cannot resume') from None
 
 
 @dataclass(frozen=True)

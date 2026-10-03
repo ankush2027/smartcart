@@ -283,7 +283,7 @@ def test_canonical_creation_leaves_caller_transaction_owned_by_caller(monkeypatc
     assert len(rows) == (1 if finish == 'commit' else 0)
     if finish == 'commit':
         assert rows[0][0] == sid
-        assert rows[0][4:] == ('CART-001', 'uid-a')
+        assert rows[0][4:] == ('CART-001', 'uid-a', None)
 
 
 def test_canonical_creation_requires_active_injected_transaction():

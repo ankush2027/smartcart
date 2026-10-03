@@ -257,7 +257,9 @@ No cart status field is needed.
 Pair first, then start/resume the runtime against that active session. An
 existing runtime remains bound to its original session; after completion it
 requires controlled shutdown/restart before serving another session. No
-automatic runtime turnover, checkout, payment or automatic Firebase repair is implemented.
+automatic runtime turnover, payment or automatic Firebase repair is implemented.
+The [checkout endpoint](checkout.md) freezes a nonempty bill without completion
+or ownership release; owner reconnect still returns that same frozen session.
 Future trusted checkout/payment orchestration must verify payment on the backend
 and coordinate the runtime/final bill before calling canonical completion.
 Flutter cannot declare payment success or complete/release sessions directly.

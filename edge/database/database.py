@@ -78,9 +78,18 @@ def initialize_database():
             end_time TEXT,
             total_amount REAL DEFAULT 0,
             cart_id TEXT,
-            customer_uid TEXT
+            customer_uid TEXT,
+            checkout_started_at TEXT
         )
     """)
+
+    try:
+        if 'checkout_started_at' not in {row[1] for row in cursor.execute('PRAGMA table_info(sessions)')}:
+            cursor.execute('ALTER TABLE sessions ADD COLUMN checkout_started_at TEXT')
+    except Exception:
+        connection.rollback()
+        connection.close()
+        raise
 
     # Migration: add session-ownership columns to databases created before
     # cart_id / customer_uid were introduced.

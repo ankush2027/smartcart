@@ -86,6 +86,7 @@ from dataclasses import dataclass
 
 from edge.billing.billing import (
     InactiveSessionError,
+    CheckoutFrozenError,
     get_cart_state_rows as _billing_state_rows,
     add_item as _billing_add,
     assign_customer_to_session as _billing_assign_customer,
@@ -296,6 +297,9 @@ class CartSession:
         # persistent record if the product is missing from the DB.
         try:
             ok = _billing_add(self._session_id, resolution.product_id)
+        except CheckoutFrozenError:
+            return SessionResult(False, True, resolution.product_id, resolution.yolo_class,
+                                 "Session checkout is frozen")
         except InactiveSessionError:
             return SessionResult(False, True, resolution.product_id, resolution.yolo_class,
                                  "Session is missing or completed")
@@ -390,6 +394,10 @@ class CartSession:
         # Billing: decrement bill item.
         try:
             ok = _billing_remove(self._session_id, resolution.product_id)
+        except CheckoutFrozenError:
+            self._cart_state.add(resolution.product_id, resolution.yolo_class)
+            return SessionResult(False, True, resolution.product_id, resolution.yolo_class,
+                                 "Session checkout is frozen")
         except Exception:
             self._cart_state.add(resolution.product_id, resolution.yolo_class)
             raise

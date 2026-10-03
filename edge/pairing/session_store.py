@@ -402,6 +402,12 @@ def pair_and_assign_in_transaction(
         if cart_session is None:
             session_id = create_session(cart_id, customer_uid=customer_uid, _conn=conn)
         else:
+            frozen = cur.execute(
+                'SELECT checkout_started_at FROM sessions WHERE session_id = ?',
+                (session_id,),
+            ).fetchone()[0]
+            if frozen is not None:
+                raise IntegrityConflict('checkout_frozen', 'Frozen session cannot be reassigned.')
             cur.execute(
                 "UPDATE sessions SET customer_uid = ? WHERE session_id = ?",
                 (customer_uid, session_id),
@@ -467,7 +473,7 @@ def assign_customer_atomic(
             cur.execute("BEGIN IMMEDIATE")
 
         cur.execute(
-            "SELECT customer_uid FROM sessions WHERE session_id = ?",
+            "SELECT customer_uid, checkout_started_at FROM sessions WHERE session_id = ?",
             (session_id,),
         )
         row = cur.fetchone()
@@ -489,6 +495,8 @@ def assign_customer_atomic(
                 cur.execute("COMMIT")
             return
 
+        if row[1] is not None:
+            raise IntegrityConflict('checkout_frozen', 'Frozen session cannot be reassigned.')
         cur.execute(
             "UPDATE sessions SET customer_uid = ? WHERE session_id = ?",
             (customer_uid, session_id),
