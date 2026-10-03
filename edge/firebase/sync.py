@@ -224,6 +224,33 @@ def sync_session(
 # Bill item sync
 # ---------------------------------------------------------------------------
 
+def sync_session_projection(snapshot, *, _ref=None) -> None:
+    """Publish a validated SessionProjection in one controlled recovery write.
+
+    A top-level bill_items value replaces that complete subtree; None removes
+    it for an empty bill. update() preserves event_log and unrelated children.
+    This does not order concurrent writers or provide exactly-once delivery.
+    """
+    bill_items = {
+        str(item.product_id): {
+            'product_name': item.product_name,
+            'quantity': item.quantity,
+            'price': item.price,
+            'total': item.total,
+        }
+        for item in snapshot.bill_items
+    }
+    data = {
+        'cart_id': snapshot.cart_id,
+        'customer_uid': snapshot.customer_uid,
+        'start_time': snapshot.start_time,
+        'end_time': snapshot.end_time,
+        'total_amount': snapshot.total_amount,
+        'bill_items': bill_items or None,
+    }
+    _root_ref(_ref).child(f'sessions/{snapshot.session_id}').update(data)
+
+
 def sync_bill_item(
     session_id: int,
     product_id: int,

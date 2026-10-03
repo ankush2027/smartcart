@@ -19,7 +19,7 @@ python -m edge.runtime.run_cart \
 
 All values above are placeholders/examples. Use the same backend checkout/SQLite file as the separately running pairing API (`python -m edge.api.run_server`). The runtime does not start that server, assign a customer, create a session, or complete a session on exit. Pair the authenticated customer through `POST /pair-cart` first: an allowed cart with no active session now gets a fresh owned session automatically. `SMARTCART_ALLOWED_CARTS` defaults to `CART-001`; see [pairing configuration](pairing_endpoint.md#allowed-physical-carts). Then start this runtime to resume that session. Missing, completed-only, or multiple active sessions still fail closed. A local advisory lock prevents two cooperating runtimes from owning the same database/cart on this host.
 
-Completion preserves the old session and makes the cart logically available for a new pairing. A running runtime does not switch session IDs: dispatch rejects a changed active session and halts. Perform controlled shutdown/restart before serving the next customer's session. Runtime turnover, checkout/payment and Firebase repair remain separate work. Neither app close/logout nor runtime exit completes an unpaid session.
+Completion preserves the old session and makes the cart logically available for a new pairing. A running runtime does not switch session IDs: dispatch rejects a changed active session and halts. Perform controlled shutdown/restart before serving the next customer's session. Runtime turnover, checkout/payment and automatic Firebase repair remain separate work. Neither app close/logout nor runtime exit completes an unpaid session.
 
 `--simulate-weight` is mandatory and startup visibly reports SIMULATED WEIGHT. In the terminal enter signed gram deltas, e.g. `75` or `-75`, while moving the corresponding item in camera view. Existing timed confirmation requires both signals within one second. The simulation starts at `--initial-weight` grams (default 500); choose a baseline that supports the intended simulated removals. Subthreshold changes accumulate against the last emitted-event baseline. Invalid/non-finite input or negative simulated totals stop the runtime. EOF stops it; Ctrl-C/SIGTERM requests graceful shutdown. No manual Python ADD/REMOVE call is needed per event.
 
@@ -64,6 +64,11 @@ The existing Firebase exception type still propagates from CartSession, preservi
 A confirmation consumes its movement/weight timestamp identity before inference. Already-consumed or older channel timestamps cannot dispatch again. Events predating this runtime start, arriving from the future, or older than the configurable 30-second dispatch age limit are rejected. This is replay/staleness protection at dispatch, not a replacement confirmation algorithm. Timestamps must share the existing naive local datetime convention; clock jumps can cause safe rejection. The runtime does not persist/replay its queue on restart, and it cannot identify a replay whose upstream timestamps were falsified or regenerated.
 
 The worker halts on unresolved, rejected or committed-sync-failed outcomes and discards queued follow-up events. Inspect/reconcile the physical/software cart and Firebase before restarting; do not repeat a committed physical operation to repair synchronization. There is no durable Firebase outbox, automatic retry or exactly-once distributed delivery claim. Firebase writes remain separate bill/metadata/event operations, so partial downstream state is possible. A startup does not automatically reconcile earlier failed Firebase writes.
+
+For an existing active or completed session, operators can repair downstream
+metadata and bills using [controlled reconciliation](controlled_reconciliation.md)
+after stopping relevant writers and resolving in-flight work. This does not
+replay events, repair physical contents, or automatically restart the runtime.
 
 ## Concurrency and cleanup
 

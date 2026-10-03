@@ -257,7 +257,7 @@ No cart status field is needed.
 Pair first, then start/resume the runtime against that active session. An
 existing runtime remains bound to its original session; after completion it
 requires controlled shutdown/restart before serving another session. No
-automatic runtime turnover, checkout, payment or Firebase repair is implemented.
+automatic runtime turnover, checkout, payment or automatic Firebase repair is implemented.
 Future trusted checkout/payment orchestration must verify payment on the backend
 and coordinate the runtime/final bill before calling canonical completion.
 Flutter cannot declare payment success or complete/release sessions directly.
@@ -286,7 +286,9 @@ schema constraint.
 Firebase sync starts only after SQLite commit and connection release. Failure
 preserves SQLite ownership and the existing success response. Same-owner retry
 remains `already_paired` and currently does not retry failed Firebase sync; a
-later backend synchronization must repair lag. No outbox or automatic retry
+later backend synchronization must repair lag. Operators can use
+[controlled projection reconciliation](controlled_reconciliation.md) after
+quiescing relevant writers. Pairing does not invoke it. No outbox or automatic retry
 queue is introduced. Concurrent post-commit backend updates can still cause
 RTDB synchronization ordering issues; the transaction does not serialize
 network writes.
