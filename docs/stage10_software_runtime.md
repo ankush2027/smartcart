@@ -26,6 +26,11 @@ ADD/REMOVE check the persisted freeze in their billing transaction, including wo
 recognized before checkout. A frozen rejection uses the existing fail-stop behavior;
 queued events are discarded and rejected REMOVE restores memory. Upgrade all writers
 together: old binaries ignore the freeze. Checkout does not complete the session.
+Cancellation retains checkout history and does not revive an old runtime: each
+runtime captures the latest checkout ID with its hydrated contents, and billing
+checks that generation inside every production mutation transaction. After exact-ID
+cancellation, operator physical inspection and a fresh runtime are required. Do not
+replay rejected/queued work; no automatic physical reconciliation is implemented.
 
 `--simulate-weight` is mandatory and startup visibly reports SIMULATED WEIGHT. In the terminal enter signed gram deltas, e.g. `75` or `-75`, while moving the corresponding item in camera view. Existing timed confirmation requires both signals within one second. The simulation starts at `--initial-weight` grams (default 500); choose a baseline that supports the intended simulated removals. Subthreshold changes accumulate against the last emitted-event baseline. Invalid/non-finite input or negative simulated totals stop the runtime. EOF stops it; Ctrl-C/SIGTERM requests graceful shutdown. No manual Python ADD/REMOVE call is needed per event.
 

@@ -13,6 +13,7 @@ def get_connection():
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     connection = sqlite3.connect(DATABASE_PATH)
+    connection.execute('PRAGMA foreign_keys = ON')
 
     return connection
 
@@ -125,7 +126,18 @@ def initialize_database():
     """)
 
     connection.commit()
-    connection.close()
+    try:
+        # Explicit atomic checkout schema/backfill migration; all old writers
+        # must be stopped. Import here keeps initialization free of import cycles.
+        from edge.billing.checkout import migrate_checkouts
+        connection.execute('BEGIN IMMEDIATE')
+        migrate_checkouts(connection)
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 if __name__ == "__main__":

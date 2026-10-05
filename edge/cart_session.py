@@ -87,8 +87,9 @@ from dataclasses import dataclass
 from edge.billing.billing import (
     InactiveSessionError,
     CheckoutFrozenError,
-    get_cart_state_rows as _billing_state_rows,
-    add_item as _billing_add,
+    StaleRuntimeError,
+    hydrate_cart as _billing_state_rows,
+    add_runtime_item as _billing_add,
     assign_customer_to_session as _billing_assign_customer,
     complete_session as _billing_complete,
     create_session as _billing_create_session,
@@ -97,7 +98,7 @@ from edge.billing.billing import (
     get_latest_log_entry as _billing_get_latest_log,
     get_session_log as _billing_get_log,
     get_session_meta as _billing_get_session_meta,
-    remove_item as _billing_remove,
+    remove_runtime_item as _billing_remove,
     set_session_cart_id as _billing_set_cart_id,
 )
 from edge.detection.cart_state import CartState
@@ -204,7 +205,7 @@ class CartSession:
 
         if session_id is not None:
             self._session_id: int = session_id
-            rows = _billing_state_rows(session_id)
+            rows, self._checkout_generation = _billing_state_rows(session_id)
             seen = set()
             for product_id, yolo_class, quantity in rows:
                 if (product_id in seen or not isinstance(yolo_class, str)
@@ -217,6 +218,7 @@ class CartSession:
 
         else:
             self._session_id = _billing_create_session(cart_id=cart_id)
+            _, self._checkout_generation = _billing_state_rows(self._session_id)
             if cart_id is not None and session_id is None:
                 # cart_id already stored by create_session(); no extra write needed.
                 pass
@@ -296,10 +298,13 @@ class CartSession:
         # Billing first: ensures CartState is never ahead of the
         # persistent record if the product is missing from the DB.
         try:
-            ok = _billing_add(self._session_id, resolution.product_id)
+            ok = _billing_add(self._session_id, resolution.product_id,
+                              expected_generation=self._checkout_generation)
         except CheckoutFrozenError:
             return SessionResult(False, True, resolution.product_id, resolution.yolo_class,
                                  "Session checkout is frozen")
+        except StaleRuntimeError as error:
+            return SessionResult(False, True, resolution.product_id, resolution.yolo_class, str(error))
         except InactiveSessionError:
             return SessionResult(False, True, resolution.product_id, resolution.yolo_class,
                                  "Session is missing or completed")
@@ -393,11 +398,15 @@ class CartSession:
 
         # Billing: decrement bill item.
         try:
-            ok = _billing_remove(self._session_id, resolution.product_id)
+            ok = _billing_remove(self._session_id, resolution.product_id,
+                                 expected_generation=self._checkout_generation)
         except CheckoutFrozenError:
             self._cart_state.add(resolution.product_id, resolution.yolo_class)
             return SessionResult(False, True, resolution.product_id, resolution.yolo_class,
                                  "Session checkout is frozen")
+        except StaleRuntimeError as error:
+            self._cart_state.add(resolution.product_id, resolution.yolo_class)
+            return SessionResult(False, True, resolution.product_id, resolution.yolo_class, str(error))
         except Exception:
             self._cart_state.add(resolution.product_id, resolution.yolo_class)
             raise

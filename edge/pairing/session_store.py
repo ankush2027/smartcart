@@ -332,6 +332,14 @@ def pair_and_assign_in_transaction(
         cart_session = _row_to_meta(cart_rows[0]) if cart_rows else None
         session_id = cart_session["session_id"] if cart_session else None
         session_owner = cart_session["customer_uid"] if cart_session else None
+        if cart_session is not None:
+            from edge.billing.checkout import checkout_history, CheckoutError
+            marker = cur.execute('SELECT checkout_started_at FROM sessions WHERE session_id=?',
+                                 (session_id,)).fetchone()[0]
+            try:
+                checkout_history(conn, session_id, cart_session['end_time'], marker)
+            except CheckoutError:
+                raise IntegrityConflict('checkout_integrity', 'Checkout lifecycle requires backend inspection.') from None
 
         # ------------------------------------------------------------------
         # Invariant 3 & 4: customer uniqueness
@@ -406,7 +414,7 @@ def pair_and_assign_in_transaction(
                 'SELECT checkout_started_at FROM sessions WHERE session_id = ?',
                 (session_id,),
             ).fetchone()[0]
-            if frozen is not None:
+            if frozen is not None or cur.execute('SELECT 1 FROM checkouts WHERE session_id=?', (session_id,)).fetchone():
                 raise IntegrityConflict('checkout_frozen', 'Frozen session cannot be reassigned.')
             cur.execute(
                 "UPDATE sessions SET customer_uid = ? WHERE session_id = ?",
@@ -495,7 +503,7 @@ def assign_customer_atomic(
                 cur.execute("COMMIT")
             return
 
-        if row[1] is not None:
+        if row[1] is not None or cur.execute('SELECT 1 FROM checkouts WHERE session_id=?', (session_id,)).fetchone():
             raise IntegrityConflict('checkout_frozen', 'Frozen session cannot be reassigned.')
         cur.execute(
             "UPDATE sessions SET customer_uid = ? WHERE session_id = ?",

@@ -10,7 +10,11 @@ POST /pair-cart
     Pair an authenticated Firebase customer with a physical cart/session.
     See: docs/pairing_endpoint.md
 POST /sessions/{session_id}/checkout
-    Freeze the verified owner's authoritative bill. See: docs/checkout.md
+    Freeze the verified owner's bill with an Idempotency-Key.
+POST /sessions/{session_id}/checkouts/{checkout_id}/cancel
+    Cancel only that checkout before payment reservation.
+GET /sessions/{session_id}/checkout
+    Read authoritative owner-only checkout state. See: docs/checkout.md
 
 Architecture
 ------------
@@ -50,7 +54,7 @@ from flask import Flask, jsonify, request
 
 from edge.pairing.pair_cart import PairingError, pair_customer_to_cart
 from edge.pairing.token_verifier import TokenVerificationError, verify_id_token
-from edge.billing.checkout import begin_checkout, CheckoutError
+from edge.billing.checkout import begin_checkout, cancel_checkout, read_checkout_state, CheckoutError
 
 logger = logging.getLogger(__name__)
 
@@ -193,8 +197,7 @@ def create_app(
             "status":     result.status,
         }), 200
 
-    @app.route('/sessions/<session_id>/checkout', methods=['POST'])
-    def checkout(session_id):
+    def checkout_request(session_id, operation, checkout_id=None, *, read=False):
         auth_header = request.headers.get('Authorization', '')
         if not auth_header.startswith('Bearer '):
             return _error_response('authentication_required', 'Bearer token required.', 401)
@@ -203,19 +206,34 @@ def create_app(
         except TokenVerificationError as exc:
             return _error_response(exc.code, exc.message,
                                    401 if exc.code == 'authentication_required' else 403)
-        if request.get_json(silent=True) != {}:
+        if not read and request.get_json(silent=True) != {}:
             return _error_response('invalid_request', 'Body must be an empty JSON object.', 400)
-        if not session_id.isascii() or not session_id.isdecimal() or len(session_id) > 19:
-            return _error_response('invalid_session_id', 'Invalid session ID.', 400)
+        for value in (session_id,) if checkout_id is None else (session_id, checkout_id):
+            if not value.isascii() or not value.isdecimal() or len(value) > 19:
+                return _error_response('invalid_session_id', 'Invalid identifier.', 400)
         try:
-            result = begin_checkout(int(session_id), uid)
+            result = operation(int(session_id), uid)
         except CheckoutError as exc:
             return _error_response(exc.code, exc.message, exc.http_status)
         except sqlite3.Error:
             return _error_response('database_unavailable', 'Checkout unavailable; retry safely.', 503)
         except Exception:
             return _error_response('internal_error', 'Checkout could not be confirmed.', 500)
-        return jsonify(asdict(result)), 200
+        return jsonify(result if isinstance(result, dict) else asdict(result)), 200
+
+    @app.route('/sessions/<session_id>/checkout', methods=['POST'])
+    def checkout(session_id):
+        return checkout_request(session_id, lambda sid, uid:
+                                begin_checkout(sid, uid, request.headers.get('Idempotency-Key')))
+
+    @app.route('/sessions/<session_id>/checkouts/<checkout_id>/cancel', methods=['POST'])
+    def cancel(session_id, checkout_id):
+        return checkout_request(session_id, lambda sid, uid:
+                                cancel_checkout(sid, int(checkout_id), uid), checkout_id)
+
+    @app.route('/sessions/<session_id>/checkout', methods=['GET'])
+    def checkout_state(session_id):
+        return checkout_request(session_id, read_checkout_state, read=True)
 
     return app
 

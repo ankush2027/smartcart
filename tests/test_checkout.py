@@ -58,19 +58,19 @@ def api(uid='owner'):
 
 def post(client, sid, body=None, token='valid'):
     return client.post(f'/sessions/{sid}/checkout', json={} if body is None else body,
-                       headers={'Authorization': f'Bearer {token}'})
+                       headers={'Authorization': f'Bearer {token}', 'Idempotency-Key': 'request-1'})
 
 
 def test_fresh_schema_and_repeat_preserves_checkout(populated):
     sid, _ = populated
     columns = {r[1]: r for r in sql('PRAGMA table_info(sessions)')}
     assert columns['checkout_started_at'][2:4] == ('TEXT', 0)
-    result = checkout.begin_checkout(sid, 'owner')
+    result = checkout.begin_checkout(sid, 'owner', 'request-1')
     before = state()
     database.initialize_database()
     database.initialize_database()
     assert state() == before
-    assert checkout.begin_checkout(sid, 'owner') == result
+    assert checkout.begin_checkout(sid, 'owner', 'request-1') == result
 
 
 def test_old_schema_migration_preserves_active_and_completed(tmp_path, monkeypatch):
@@ -108,13 +108,13 @@ def test_frozen_projection_does_not_publish_or_erase_checkout(populated):
     from tests.test_session_reconciliation import StatefulReference
     from edge.firebase.reconcile import reconcile_session_to_firebase
     sid, _ = populated
-    result = checkout.begin_checkout(sid, 'owner')
+    result = checkout.begin_checkout(sid, 'owner', 'request-1')
     root = StatefulReference({'sessions': {str(sid): {'event_log': {'old': 'event'}}}})
     before = state()
     reconcile_session_to_firebase(sid, _ref=root)
     assert 'checkout_started_at' not in root.data['sessions'][str(sid)]
     assert root.data['sessions'][str(sid)]['event_log'] == {'old': 'event'}
-    assert checkout.begin_checkout(sid, 'owner') == result
+    assert checkout.begin_checkout(sid, 'owner', 'request-1') == result
     assert state() == before
 
 
@@ -135,16 +135,18 @@ def test_freeze_stored_amount_no_completion_or_ownership_change(populated):
     sid, pid = populated
     sql('UPDATE products SET price = 999 WHERE product_id = ?', (pid,))
     before_bill, before_log = billing.get_bill(sid), billing.get_session_log(sid)
-    result = checkout.begin_checkout(sid, 'owner')
+    result = checkout.begin_checkout(sid, 'owner', 'request-1')
     assert asdict(result) == dict(session_id=sid, cart_id='CART-A',
                                  checkout_started_at=result.checkout_started_at,
+                                 checkout_id=result.checkout_id, state='FROZEN',
+                                 cancelled_at=None, runtime_restart_required=False,
                                  final_amount=20, currency='INR')
     assert sql('SELECT checkout_started_at, end_time, customer_uid, cart_id, total_amount FROM sessions') == [
         (result.checkout_started_at, None, 'owner', 'CART-A', 20)]
     assert billing.get_bill(sid) == before_bill
     assert billing.get_session_log(sid) == before_log
     before = state()
-    assert checkout.begin_checkout(sid, 'owner') == result
+    assert checkout.begin_checkout(sid, 'owner', 'request-1') == result
     assert state() == before
 
 
@@ -152,7 +154,7 @@ def test_empty_cart_never_freezes_or_releases():
     sid = billing.create_session('CART-A', customer_uid='owner')
     before = state()
     with pytest.raises(checkout.CheckoutError, match='empty'):
-        checkout.begin_checkout(sid, 'owner')
+        checkout.begin_checkout(sid, 'owner', 'request-1')
     assert state() == before
 
 
@@ -171,11 +173,11 @@ def test_empty_cart_never_freezes_or_releases():
 def test_invalid_bill_rejected_without_writes(populated, statement, frozen):
     sid, _ = populated
     if frozen:
-        checkout.begin_checkout(sid, 'owner')
+        checkout.begin_checkout(sid, 'owner', 'request-1')
     sql(statement)
     before = state()
     with pytest.raises(checkout.CheckoutError) as error:
-        checkout.begin_checkout(sid, 'owner')
+        checkout.begin_checkout(sid, 'owner', 'request-1')
     assert error.value.code == 'invalid_bill'
     assert state() == before
 
@@ -183,7 +185,7 @@ def test_invalid_bill_rejected_without_writes(populated, statement, frozen):
 @pytest.mark.parametrize('sid', [0, -1, True, None, '1', 2**63])
 def test_invalid_direct_ids(sid):
     with pytest.raises(checkout.CheckoutError) as error:
-        checkout.begin_checkout(sid, 'owner')
+        checkout.begin_checkout(sid, 'owner', 'request-1')
     assert error.value.http_status == 400
 
 
@@ -201,7 +203,7 @@ def test_invalid_session_no_writes(populated, change, code):
     sql(change)
     before = state()
     with pytest.raises(checkout.CheckoutError) as error:
-        checkout.begin_checkout(sid, 'owner')
+        checkout.begin_checkout(sid, 'owner', 'request-1')
     assert error.value.code == code
     assert state() == before
 
@@ -212,7 +214,7 @@ def test_duplicate_active_ownership_rejected(populated, cart, owner):
     billing.create_session(cart, customer_uid=owner)
     before = state()
     with pytest.raises(checkout.CheckoutError) as error:
-        checkout.begin_checkout(sid, 'owner')
+        checkout.begin_checkout(sid, 'owner', 'request-1')
     assert error.value.code == 'session_conflict'
     assert state() == before
 
@@ -244,7 +246,8 @@ def test_http_auth_owner_success_and_lost_response_retry(populated):
     # Recreate the application: all state must come from persisted SQLite.
     assert post(api(), sid).json == first.json
     assert state() == before
-    assert set(first.json) == {'session_id', 'cart_id', 'checkout_started_at', 'final_amount', 'currency'}
+    assert set(first.json) == {'session_id', 'cart_id', 'checkout_started_at', 'final_amount', 'currency',
+                               'checkout_id', 'state', 'cancelled_at', 'runtime_restart_required'}
 
 
 @pytest.mark.parametrize('body', ['[]', 'null', '{', '"text"'])
@@ -260,7 +263,7 @@ def test_concurrent_duplicate_checkout(populated):
     barrier = Barrier(2)
     def freeze():
         barrier.wait(timeout=5)
-        return checkout.begin_checkout(sid, 'owner')
+        return checkout.begin_checkout(sid, 'owner', 'request-1')
     with ThreadPoolExecutor(2) as pool:
         a, b = pool.submit(freeze), pool.submit(freeze)
         assert a.result(timeout=10) == b.result(timeout=10)
@@ -284,7 +287,7 @@ def test_writer_race_both_orderings(populated, monkeypatch, operation, expected,
         return conn
     monkeypatch.setattr(module, 'get_connection', held_connection)
     mutate = lambda: getattr(billing, operation)(sid, pid)
-    freeze = lambda: checkout.begin_checkout(sid, 'owner')
+    freeze = lambda: checkout.begin_checkout(sid, 'owner', 'request-1')
     def second_action():
         competing.set()
         return (freeze if first == 'mutation' else mutate)()
@@ -338,9 +341,9 @@ def test_inflight_event_freeze_restores_memory_and_halts_queue(populated, monkey
     import edge.cart_session as module
     attr = '_billing_add' if kind == 'ADD' else '_billing_remove'
     original = getattr(module, attr)
-    def freeze_first(*args):
-        checkout.begin_checkout(sid, 'owner')
-        return original(*args)
+    def freeze_first(*args, **kwargs):
+        checkout.begin_checkout(sid, 'owner', 'request-1')
+        return original(*args, **kwargs)
     monkeypatch.setattr(module, attr, freeze_first)
     outcomes = []
     rt.on_outcome = outcomes.append
@@ -355,7 +358,7 @@ def test_inflight_event_freeze_restores_memory_and_halts_queue(populated, monkey
 def test_frozen_startup_pairing_ownership_completion_history(populated):
     sid, pid = populated
     shopping_runtime = runtime()
-    result = checkout.begin_checkout(sid, 'owner')
+    result = checkout.begin_checkout(sid, 'owner', 'request-1')
     with pytest.raises(StartupError, match='frozen'):
         resume_session('CART-A', Detector(), None)
     assert pair_and_assign_in_transaction('CART-A', 'owner').session_id == sid

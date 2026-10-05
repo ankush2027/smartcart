@@ -237,7 +237,7 @@ def test_remove_sqlite_exception_restores_memory(setup, monkeypatch):
     import edge.cart_session as module
     billing.add_item(*setup)
     rt = runtime()
-    def fail(*_):
+    def fail(*_, **kwargs):
         raise OSError('SQLite failed')
     monkeypatch.setattr(module, '_billing_remove', fail)
     acquire(rt, -75)
@@ -429,9 +429,9 @@ def test_completion_between_resolution_and_billing_rejects(setup, monkeypatch, k
     rt = runtime()
     attr = '_billing_add' if kind == 'ADD' else '_billing_remove'
     original = getattr(module, attr)
-    def complete_first(*args):
+    def complete_first(*args, **kwargs):
         billing.complete_session(sid)
-        return original(*args)
+        return original(*args, **kwargs)
     monkeypatch.setattr(module, attr, complete_first)
     acquire(rt, 75 if kind == 'ADD' else -75)
     assert dispatch_next(rt).status == 'rejected'

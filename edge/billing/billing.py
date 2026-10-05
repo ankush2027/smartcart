@@ -93,6 +93,7 @@ def set_session_cart_id(session_id: int, cart_id: str) -> None:
         Stable physical cart identifier string.
     """
     with _active_mutation(session_id, shopping=True) as connection:
+        _protect_checkout_owner(connection, session_id, 'cart_id', cart_id)
         connection.execute('UPDATE sessions SET cart_id = ? WHERE session_id = ?',
                            (cart_id, session_id))
 
@@ -113,6 +114,7 @@ def assign_customer_to_session(session_id: int, customer_uid: str) -> None:
         Firebase Auth UID of the authenticated customer.
     """
     with _active_mutation(session_id, shopping=True) as connection:
+        _protect_checkout_owner(connection, session_id, 'customer_uid', customer_uid)
         connection.execute('UPDATE sessions SET customer_uid = ? WHERE session_id = ?',
                            (customer_uid, session_id))
 
@@ -175,8 +177,34 @@ class CheckoutFrozenError(InactiveSessionError):
     """Checkout has frozen this session; shopping cannot resume."""
 
 
+class StaleRuntimeError(InactiveSessionError):
+    """A checkout permanently invalidated this runtime's hydrated generation."""
+
+
+def add_runtime_item(session_id, product_id, *, expected_generation):
+    """Production runtime entry point: a captured generation is mandatory."""
+    if type(expected_generation) is not int or expected_generation < 0:
+        raise StaleRuntimeError('Runtime generation is required')
+    return add_item(session_id, product_id, expected_generation=expected_generation)
+
+
+def remove_runtime_item(session_id, product_id, *, expected_generation):
+    """Production runtime entry point: never fall back to an unguarded call."""
+    if type(expected_generation) is not int or expected_generation < 0:
+        raise StaleRuntimeError('Runtime generation is required')
+    return remove_item(session_id, product_id, expected_generation=expected_generation)
+
+
+def _protect_checkout_owner(connection, session_id, column, value):
+    if connection.execute('SELECT 1 FROM checkouts WHERE session_id=?', (session_id,)).fetchone():
+        current = connection.execute(f'SELECT {column} FROM sessions WHERE session_id=?',
+                                     (session_id,)).fetchone()[0]
+        if current != value:
+            raise InactiveSessionError('Checkout history prevents ownership reassignment')
+
+
 @contextmanager
-def _active_mutation(session_id, *, shopping=False):
+def _active_mutation(session_id, *, shopping=False, expected_generation=None):
     connection = get_connection()
     try:
         connection.execute("BEGIN IMMEDIATE")
@@ -185,8 +213,14 @@ def _active_mutation(session_id, *, shopping=False):
         ).fetchone()
         if row is None or row[0] is not None:
             raise InactiveSessionError("Session is missing or completed")
+        from edge.billing.checkout import checkout_history
+        history = checkout_history(connection, session_id, row[0], row[1])
         if shopping and row[1] is not None:
             raise CheckoutFrozenError("Session checkout is frozen")
+        generation = history[-1]['checkout_id'] if history else 0
+        if expected_generation is not None and (type(expected_generation) is not int
+                                                or expected_generation != generation):
+            raise StaleRuntimeError('Stale runtime generation; reconcile and start a fresh runtime')
         yield connection
         connection.commit()
     except BaseException:
@@ -209,15 +243,23 @@ def _update_total(cursor, session_id):
 
 def get_cart_state_rows(session_id):
     """Read resume quantities/classes in one snapshot; reject corrupt joins."""
+    return hydrate_cart(session_id)[0]
+
+
+def hydrate_cart(session_id):
+    """Hydrate bill, shopping state and generation under one transaction."""
     with _active_mutation(session_id, shopping=True) as connection:
-        return connection.execute(
+        rows = connection.execute(
             "SELECT b.product_id, p.yolo_class, b.quantity FROM bill_items b "
             "LEFT JOIN products p ON p.product_id = b.product_id "
             "WHERE b.session_id = ?", (session_id,)
         ).fetchall()
+        generation = connection.execute('SELECT COALESCE(MAX(checkout_id),0) FROM checkouts WHERE session_id=?',
+                                        (session_id,)).fetchone()[0]
+        return rows, generation
 
 
-def add_item(session_id: int, product_id: int) -> bool:
+def add_item(session_id: int, product_id: int, *, expected_generation=None) -> bool:
     """
     Add one unit of *product_id* to the bill for *session_id*.
 
@@ -234,7 +276,7 @@ def add_item(session_id: int, product_id: int) -> bool:
         Missing/completed sessions raise InactiveSessionError. SQLite errors
         roll back the transaction and propagate.
     """
-    with _active_mutation(session_id, shopping=True) as connection:
+    with _active_mutation(session_id, shopping=True, expected_generation=expected_generation) as connection:
         cursor = connection.cursor()
 
         cursor.execute("""
@@ -306,7 +348,7 @@ def add_item(session_id: int, product_id: int) -> bool:
         return True
 
 
-def remove_item(session_id: int, product_id: int) -> bool:
+def remove_item(session_id: int, product_id: int, *, expected_generation=None) -> bool:
     """
     Remove one unit of *product_id* from the bill for *session_id*.
 
@@ -321,7 +363,7 @@ def remove_item(session_id: int, product_id: int) -> bool:
         ``False`` when no ``bill_items`` row exists for this
         ``(session_id, product_id)`` pair.
     """
-    with _active_mutation(session_id, shopping=True) as connection:
+    with _active_mutation(session_id, shopping=True, expected_generation=expected_generation) as connection:
         cursor = connection.cursor()
 
         cursor.execute("""
@@ -514,8 +556,10 @@ def complete_session(session_id: int) -> float:
     """
     Mark the session as complete and return the final total.
 
-    Recalculates the total from ``bill_items``, then sets
-    ``sessions.end_time`` and ``sessions.total_amount``.
+    Validates and preserves a current checkout's immutable amount, otherwise
+    recalculates the total from ``bill_items``. Sets ``sessions.end_time`` and
+    transitions the current checkout to COMPLETED atomically. This trusted
+    operation does not verify payment.
 
     The Firebase sync layer should call :func:`get_session_meta` after
     this function returns to obtain the final ``end_time`` and
@@ -528,7 +572,20 @@ def complete_session(session_id: int) -> float:
     """
     with _active_mutation(session_id) as connection:
         cursor = connection.cursor()
-        total = _update_total(cursor, session_id)
+        frozen = connection.execute("SELECT amount FROM checkouts WHERE session_id=? AND state='FROZEN'",
+                                    (session_id,)).fetchone()
+        if frozen is not None:
+            from edge.billing.checkout import _validate_bill
+            _validate_bill(connection, session_id, frozen[0])
+            # Preserve the already validated quote exactly, including existing
+            # floating-point tolerance. Completion must not reprice the snapshot.
+            total = frozen[0]
+        else:
+            total = _update_total(cursor, session_id)
+        # Trusted completion is not payment verification. Keep the exact
+        # current checkout historical, in the same transaction as end_time.
+        connection.execute("UPDATE checkouts SET state='COMPLETED' WHERE session_id=? AND state='FROZEN'",
+                           (session_id,))
         cursor.execute(
             "UPDATE sessions SET end_time = datetime('now') WHERE session_id = ?",
             (session_id,),

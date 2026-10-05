@@ -260,6 +260,9 @@ requires controlled shutdown/restart before serving another session. No
 automatic runtime turnover, payment or automatic Firebase repair is implemented.
 The [checkout endpoint](checkout.md) freezes a nonempty bill without completion
 or ownership release; owner reconnect still returns that same frozen session.
+Exact-ID checkout cancellation also retains the same owned session. Continue
+shopping only after the controlled physical inspection/fresh-runtime procedure
+in the checkout documentation; reconnect alone does not authorize physical resume.
 Future trusted checkout/payment orchestration must verify payment on the backend
 and coordinate the runtime/final bill before calling canonical completion.
 Flutter cannot declare payment success or complete/release sessions directly.
