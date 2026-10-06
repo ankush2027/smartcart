@@ -267,8 +267,13 @@ def cancel_checkout(session_id, checkout_id, verified_customer_uid) -> CheckoutR
             if conn.execute('SELECT 1 FROM checkouts WHERE checkout_id=?', (checkout_id,)).fetchone():
                 raise CheckoutError('checkout_session_mismatch', 'Checkout does not belong to this session.')
             raise CheckoutError('checkout_not_found', 'Checkout not found.', 404)
-        if row['payment_started_at'] is not None:
+        from edge.payment.store import _one, reservation_consistent
+        attempt = _one(conn, 'SELECT * FROM payment_attempts WHERE checkout_id=?', (checkout_id,))
+        if attempt is not None:
+            reservation_consistent(row, attempt)
+        if row['payment_started_at'] is not None or attempt is not None:
             raise CheckoutError('payment_started', 'Payment reservation prevents cancellation.')
+        reservation_consistent(row, attempt)
         if row['state'] == 'CANCELLED':
             return _result(row, cart)
         if row != rows[-1] or row['state'] != 'FROZEN':

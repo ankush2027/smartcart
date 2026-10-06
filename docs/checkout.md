@@ -4,14 +4,16 @@ SQLite remains authoritative. `session_id` identifies the shopping journey;
 `checkout_id` identifies one immutable freeze. A session can shop, freeze checkout
 #1, cancel #1, undergo operator physical inspection, start a fresh runtime, shop
 again, and freeze checkout #2. The IDs differ even when their amounts are equal.
-No payment provider, verification, customer completion endpoint or automatic
-runtime turnover is implemented.
+The separate [offline payment core](payment.md) adds explicit fake-adapter
+verification and paid completion. No real provider or automatic runtime turnover
+is implemented.
 
 ## Storage and deployment
 
 `checkouts` retains checkout_id (AUTOINCREMENT), session_id, request_key, amount
 (REAL), currency (INR), created_at, state (FROZEN/CANCELLED/COMPLETED), cancelled_at
-and payment_started_at. Its session foreign key restricts deletion; the backend
+and payment_started_at, plus nullable amount_paise established by payment reservation.
+Its session foreign key restricts deletion; the backend
 connection factory enables foreign keys. Request keys are unique per session;
 a partial unique index permits only one FROZEN checkout per session. SQL checks
 enforce state/currency/cancellation consistency. Triggers prohibit snapshot
@@ -95,7 +97,8 @@ Cancellation retains the bill, total, cart, customer, session and history. It
 does not complete or release anything. Duplicate/concurrent cancellation, lost
 responses and backend restart return the same persisted result. A non-null
 payment_started_at blocks cancellation and is never cleared by retry/error.
-No current production operation sets that future payment marker.
+The payment core establishes the marker atomically with its durable attempt;
+attempt existence also prevents cancellation. Normal server startup has no provider.
 
 ## Authoritative state read
 
@@ -141,9 +144,9 @@ session total must match the bill sum with existing rel_tol=1e-9/abs_tol=1e-9
 semantics and is copied unchanged into checkouts.amount. Frozen retries validate
 the source; cancelled snapshots remain independent of today's bill.
 
-No rounding or broad money migration occurs. Before payment integration there
-must be one explicit INR-to-integer-paise conversion policy; provider amounts
-must eventually be persisted/compared as integers. No conversion exists here.
+No rounding or broad money migration occurs. The payment core converts the trusted
+frozen amount once to integer paise at reservation, rejecting excess precision
+without changing the REAL quote. See [payment.md](payment.md) for the strict policy.
 
 Cancellation, creation and billing writers serialize through BEGIN IMMEDIATE.
 A mutation obtaining the lock while frozen rejects; a valid fresh-generation
@@ -191,14 +194,16 @@ not cancel or release a session.
 Trusted CartSession.complete() remains available. Completing a current frozen
 checkout marks it COMPLETED in the same transaction as session end_time, retaining
 its timestamp and amount. This does not prove payment. Completing after cancellation
-does not relabel cancelled history. Future payment finalization must bind exact
-checkout/payment identity, amount, currency and lifecycle in one transaction, e.g.
-complete_paid_checkout(checkout_id, verified_payment_record). No customer completion
-endpoint or provider verification exists here.
+does not relabel cancelled history. Generic completion now rejects a payment marker
+or payment attempt. The offline payment core binds exact checkout/payment identity,
+integer amount, currency and lifecycle in complete_paid_checkout(checkout_id, attempt_id).
+It uses persisted independent verification; see [payment.md](payment.md). No real
+provider or customer generic-completion endpoint exists.
 
-Future payment initiation must reserve this checkout durably before contacting a
-provider. If reservation wins cancellation must fail; if cancellation wins payment
-creation must fail. Timeout/failure must not silently clear that reservation.
+Payment initiation reserves this checkout durably before adapter dispatch. If
+reservation wins cancellation fails; if cancellation wins payment creation fails.
+Timeout/failure never clears that reservation. The provider is explicitly injected;
+normal server startup does not enable a fake provider.
 
 Checkout, cancellation and state reads do not call Firebase. RTDB fields/rules and
 controlled reconciliation are unchanged. No checkout/cancellation history is

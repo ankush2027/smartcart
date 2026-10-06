@@ -130,8 +130,10 @@ def initialize_database():
         # Explicit atomic checkout schema/backfill migration; all old writers
         # must be stopped. Import here keeps initialization free of import cycles.
         from edge.billing.checkout import migrate_checkouts
+        from edge.payment.store import migrate_payments
         connection.execute('BEGIN IMMEDIATE')
         migrate_checkouts(connection)
+        migrate_payments(connection)
         connection.commit()
     except BaseException:
         connection.rollback()

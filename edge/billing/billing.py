@@ -559,7 +559,7 @@ def complete_session(session_id: int) -> float:
     Validates and preserves a current checkout's immutable amount, otherwise
     recalculates the total from ``bill_items``. Sets ``sessions.end_time`` and
     transitions the current checkout to COMPLETED atomically. This trusted
-    operation does not verify payment.
+    operation does not verify payment and rejects any payment reservation.
 
     The Firebase sync layer should call :func:`get_session_meta` after
     this function returns to obtain the final ``end_time`` and
@@ -572,6 +572,12 @@ def complete_session(session_id: int) -> float:
     """
     with _active_mutation(session_id) as connection:
         cursor = connection.cursor()
+        if connection.execute('''SELECT 1 FROM checkouts c WHERE c.session_id=? AND
+                (c.payment_started_at IS NOT NULL OR EXISTS(
+                    SELECT 1 FROM payment_attempts p WHERE p.checkout_id=c.checkout_id))''',
+                              (session_id,)).fetchone():
+            from edge.payment.money import PaymentError
+            raise PaymentError('payment_started', 'Reserved payment requires verified paid completion.')
         frozen = connection.execute("SELECT amount FROM checkouts WHERE session_id=? AND state='FROZEN'",
                                     (session_id,)).fetchone()
         if frozen is not None:

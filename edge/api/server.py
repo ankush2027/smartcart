@@ -67,6 +67,7 @@ def create_app(
     *,
     token_verifier=None,
     firebase_sync_fn=None,
+    payment_service=None,
 ) -> Flask:
     """
     Create and configure the SmartCart Flask application.
@@ -82,6 +83,9 @@ def create_app(
         Firebase synchronization after a successful pairing.  When ``None``,
         the default sync using the live Firebase client is used.
         **For testing only.**
+    payment_service:
+        Explicit offline/development payment service injection. None disables
+        payment endpoints; production startup never falls back to a fake.
 
     Returns
     -------
@@ -197,7 +201,7 @@ def create_app(
             "status":     result.status,
         }), 200
 
-    def checkout_request(session_id, operation, checkout_id=None, *, read=False):
+    def checkout_request(session_id, operation, checkout_id=None, *, read=False, evidence=False):
         auth_header = request.headers.get('Authorization', '')
         if not auth_header.startswith('Bearer '):
             return _error_response('authentication_required', 'Bearer token required.', 401)
@@ -206,7 +210,12 @@ def create_app(
         except TokenVerificationError as exc:
             return _error_response(exc.code, exc.message,
                                    401 if exc.code == 'authentication_required' else 403)
-        if not read and request.get_json(silent=True) != {}:
+        if evidence:
+            body = request.get_json(silent=True)
+            if (not isinstance(body, dict) or set(body) != {'payment_id', 'signature'}
+                    or any(type(v) is not str or not 1 <= len(v) <= 256 for v in body.values())):
+                return _error_response('invalid_request', 'Payment evidence fields are required.', 400)
+        elif not read and request.get_json(silent=True) != {}:
             return _error_response('invalid_request', 'Body must be an empty JSON object.', 400)
         for value in (session_id,) if checkout_id is None else (session_id, checkout_id):
             if not value.isascii() or not value.isdecimal() or len(value) > 19:
@@ -234,6 +243,27 @@ def create_app(
     @app.route('/sessions/<session_id>/checkout', methods=['GET'])
     def checkout_state(session_id):
         return checkout_request(session_id, read_checkout_state, read=True)
+
+    def payments():
+        if payment_service is None:
+            raise CheckoutError('payment_unavailable', 'Payment is not configured on this backend.', 503)
+        return payment_service
+
+    @app.route('/sessions/<session_id>/checkouts/<checkout_id>/payment', methods=['POST'])
+    def payment_start(session_id, checkout_id):
+        return checkout_request(session_id, lambda sid, uid:
+            payments().start(sid, int(checkout_id), uid, request.headers.get('Idempotency-Key')), checkout_id)
+
+    @app.route('/sessions/<session_id>/checkouts/<checkout_id>/payment', methods=['GET'])
+    def payment_status(session_id, checkout_id):
+        return checkout_request(session_id, lambda sid, uid:
+            payments().status(sid, int(checkout_id), uid), checkout_id, read=True)
+
+    @app.route('/sessions/<session_id>/checkouts/<checkout_id>/payment/evidence', methods=['POST'])
+    def payment_evidence(session_id, checkout_id):
+        return checkout_request(session_id, lambda sid, uid:
+            payments().submit_evidence(sid, int(checkout_id), uid, request.get_json()),
+            checkout_id, evidence=True)
 
     return app
 

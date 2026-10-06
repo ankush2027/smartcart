@@ -123,6 +123,11 @@ It is not designed for public internet exposure.
   outside this task.
 - Do not expose port 5000 to the internet through NAT/router port-forwarding.
 
+The offline payment foundation does not change this boundary. Normal server startup
+has no payment provider; fake payment requires explicit development/test injection.
+Later provider integration requires HTTPS, an explicit Firebase token revocation
+policy and protected webhook ingress. No public webhook is implemented here.
+
 ---
 
 ## Summary checklist before Flutter integration
