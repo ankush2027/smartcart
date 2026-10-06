@@ -1,7 +1,8 @@
 # Offline payment core
 
-SQLite is the payment/lifecycle authority. This milestone has no real provider,
-payment SDK, real-money flow, public webhook, or Flutter implementation. The
+SQLite is the payment/lifecycle authority. The Razorpay adapter is tested with
+mocked HTTP only; there is no payment SDK, real-money flow, public webhook, or
+Flutter implementation. The
 normal server calls `create_app()` without a payment service: payment endpoints
 return controlled `payment_unavailable` (503), never fall back to a fake.
 
@@ -156,12 +157,92 @@ the next customer. No unlock flag, runtime restart or physical-cart clearance is
 ## Deployment and deferred work
 
 No webhook processor, inbox or public webhook route is implemented. The adapter
-contract includes raw-byte webhook authentication, tested offline on the fake, but
+contract includes raw-byte webhook authentication, tested offline, but
 event ingestion/durable deduplication remains a later integration milestone.
 
 Current LAN HTTP is development-only. Later payment deployment requires protected
 HTTPS transport, an explicit Firebase revocation policy and protected webhook ingress.
-Never expose LAN port 5000 publicly. Razorpay/Juspay/Stripe integration, real money,
+Never expose LAN port 5000 publicly. Live provider activation, real money,
 merchant onboarding, refunds, partial/split payments, multi-provider deployment,
 offline payments, automatic abandoned-payment cancellation, physical reconciliation,
 Flutter UI changes and automatic runtime/session turnover are not implemented.
+
+## Razorpay Phase A: injected adapter, mocked HTTP only
+
+`edge.payment.razorpay.RazorpayProvider` implements the existing provider contract.
+It requires explicit mode (`test` or `live`), merchant account ID, matching-mode
+key ID, API secret, separate webhook secret, HTTP transport and a trusted
+`order_lookup(scope, order_id) -> OrderRequest | None` callback. The callback must
+read the exact persisted payment attempt by scoped provider order ID, return its
+immutable identity/money fields, and close the read transaction before returning.
+Never derive that identity from client data or provider notes. Tests exercise this
+callback against isolated SQLite, including reconstruction after a lost response.
+There is no cache, concrete network transport, configuration loader or startup wiring.
+
+The injected transport implements `HttpTransport.request` and returns
+`HttpResponse(status_code, body_bytes)`. Every request specifies the fixed HTTPS
+Razorpay API origin, Basic authentication, TLS verification, no redirects, zero
+retries and explicit connect/read deadlines (3.05/10 seconds by default).
+The transport must enforce these options, including no hidden POST retry and a
+bounded response read. The adapter also bounds JSON bodies to 1 MiB, rejects
+duplicate JSON keys/non-finite values, and suppresses raw response/transport errors.
+Do not log transport authorization headers or exception locals. No SDK is required.
+
+Creation uses the persisted integer paise value, INR, `partial_payment=false`, and
+a stable 35-character receipt (`sc_` plus the backend attempt UUID). The local
+minimum is 100 paise; smaller reservations receive authoritative rejection without
+sending HTTP. HTTP 400 is terminal only for the structured business input-validation
+rejection on amount/currency at payment initiation. Other errors, receipt conflicts,
+timeouts, malformed/mismatched success responses, 429 and 5xx remain unresolved in
+the core. A create call dispatches exactly one POST; service retries use recovery.
+
+Recovery performs GET receipt searches with count=100/skip pagination, then fetches
+the selected order by ID. The receipt filter is documented as a contains search,
+so exact receipt equality is checked locally along with amount, INR, order identity
+and any returned scope fields. Zero matches remain unresolved. Multiple matches,
+conflicting records or incomplete pagination require inspection. The default limit
+is 100 pages; reaching it fails closed. Missing `partial_payment` follows the
+documented false default; a returned value other than false is rejected.
+No empty lookup or elapsed time authorizes another POST. Receipt lookup is not a
+documented atomic idempotency or visibility guarantee; operator recovery remains
+necessary for unresolved attempts. Failed customer payments do not create a new
+order or attempt under the current one-attempt-per-checkout policy.
+
+Checkout evidence contains only `payment_id` and `signature`. HMAC-SHA256 uses the
+server-persisted order ID and API secret, compared in constant time. The adapter
+independently fetches both payment and order, binds the order to the persisted
+attempt via the callback and exact receipt, and requires integer amount equality,
+INR, status=captured, captured=true, zero amount_refunded and null refund_status.
+Only then is CAPTURED normalized for the unchanged core verification/completion
+transactions. Authorized, failed, refunded, stale, substituted or mismatched
+evidence cannot complete a checkout. A valid signature alone cannot pay a bill.
+
+Ordinary Razorpay order/payment responses do not consistently carry account/mode
+fields. Their scope comes from the configured credential context; returned scope
+fields, when present, must agree. The key prefix checks environment, but cannot
+prove that a configured merchant ID owns those credentials. Controlled onboarding
+must verify that binding before any real transport is enabled. Test/live credentials
+and webhook secrets must be separate. No such validation or API call occurred here.
+
+`verify_webhook(raw_body, signature, event_id=header_value)` authenticates the exact
+raw bytes with the webhook secret and checks account and payment-event structure.
+It supports payment.captured, payment.authorized and payment.failed and returns the
+existing contract's `(event_id, payment_id)` tuple. It performs no HTTP or database
+work. The required Razorpay event ID comes from `x-razorpay-event-id`; that header is
+not covered by the body HMAC and is only a delivery hint. Future inbox processing
+must bind a body digest, handle duplicates/out-of-order events, and independently
+fetch/verify payment facts. No receiver, durable inbox or webhook completion exists.
+
+Official references checked for this adapter:
+
+- [Create order: money, receipt, partial payments and errors](https://razorpay.com/docs/api/orders/create/)
+- [Receipt lookup and pagination](https://razorpay.com/docs/api/orders/fetch-all/)
+- [Fetch payment fields](https://razorpay.com/docs/api/payments/fetch-with-id/)
+- [Checkout signature verification](https://razorpay.com/docs/payments/payment-gateway/flutter-integration/standard/integration-steps/)
+- [Raw webhook signature and duplicate-event guidance](https://razorpay.com/docs/webhooks/validate-test/)
+
+Tests use dummy secrets and mocked HTTP with socket connections forbidden. They
+cover payloads, minimum/strict amounts, ambiguity, receipt recovery/pagination,
+signature tampering, capture/refund checks, scope isolation, redaction and durable
+service recovery/completion. Real test-mode validation, production transport,
+merchant binding, secure ingress, webhook infrastructure and Flutter remain deferred.
