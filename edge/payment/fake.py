@@ -10,7 +10,7 @@ import hmac
 import json
 from threading import RLock
 
-from .provider import (ProviderOrder, ProviderPayment, ProviderUnavailable,
+from .provider import (AuthenticatedWebhook, ProviderOrder, ProviderPayment, ProviderUnavailable,
                        OrderRejected, InvalidEvidence)
 
 
@@ -121,9 +121,18 @@ class FakeProvider:
             raise InvalidEvidence()
         try:
             event = json.loads(body)
-            if set(event) != {'event_id', 'payment_id'} or any(
+            if set(event) not in ({'event_id', 'payment_id'},
+                                 {'event_id', 'payment_id', 'order_id', 'event_type'}) or any(
                     type(v) is not str or not 1 <= len(v) <= 256 for v in event.values()):
                 raise ValueError
             return event['event_id'], event['payment_id']
         except (ValueError, TypeError, AttributeError):
             raise InvalidEvidence() from None
+
+    def authenticate_webhook(self, body, signature, *, event_id):
+        verified_id, payment_id = self.verify_webhook(body, signature)
+        event = json.loads(body)
+        if (event_id != verified_id or set(event) != {'event_id', 'payment_id', 'order_id', 'event_type'}
+                or event['event_type'] not in ('payment.captured', 'payment.authorized', 'payment.failed')):
+            raise InvalidEvidence()
+        return AuthenticatedWebhook(self.scope, event_id, event['event_type'], event['order_id'], payment_id)

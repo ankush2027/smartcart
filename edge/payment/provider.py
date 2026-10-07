@@ -51,6 +51,16 @@ class ProviderPayment:
     status: str  # Only CAPTURED authorizes verification in this core.
 
 
+@dataclass(frozen=True)
+class AuthenticatedWebhook:
+    """Authenticated identifiers are hints for fetching, never payment proof."""
+    provider_scope: str
+    event_id: str
+    event_type: str
+    order_id: str
+    payment_id: str
+
+
 class PaymentProvider(Protocol):
     scope: str
 
@@ -68,4 +78,8 @@ class PaymentProvider(Protocol):
 
     def verify_webhook(self, body: bytes, signature: str) -> tuple[str, str]:
         """Future internal use: authenticate raw bytes, return event/payment IDs."""
+        ...
+
+    def authenticate_webhook(self, body: bytes, signature: str, *, event_id: str) -> AuthenticatedWebhook:
+        """Authenticate raw bytes and normalize delivery metadata without I/O."""
         ...

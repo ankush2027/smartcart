@@ -156,9 +156,9 @@ the next customer. No unlock flag, runtime restart or physical-cart clearance is
 
 ## Deployment and deferred work
 
-No webhook processor, inbox or public webhook route is implemented. The adapter
-contract includes raw-byte webhook authentication, tested offline, but
-event ingestion/durable deduplication remains a later integration milestone.
+The Phase B inbox and explicitly invoked recovery/processing workers operate
+offline with injected providers. There is no public webhook route or background
+activation. HTTPS ingress and real provider activation remain deferred.
 
 Current LAN HTTP is development-only. Later payment deployment requires protected
 HTTPS transport, an explicit Firebase revocation policy and protected webhook ingress.
@@ -229,9 +229,9 @@ raw bytes with the webhook secret and checks account and payment-event structure
 It supports payment.captured, payment.authorized and payment.failed and returns the
 existing contract's `(event_id, payment_id)` tuple. It performs no HTTP or database
 work. The required Razorpay event ID comes from `x-razorpay-event-id`; that header is
-not covered by the body HMAC and is only a delivery hint. Future inbox processing
-must bind a body digest, handle duplicates/out-of-order events, and independently
-fetch/verify payment facts. No receiver, durable inbox or webhook completion exists.
+not covered by the body HMAC and is only a delivery hint. Phase B binds a body
+digest and independently verifies provider facts before payment completion.
+No HTTP receiver is exposed.
 
 Official references checked for this adapter:
 
@@ -245,4 +245,146 @@ Tests use dummy secrets and mocked HTTP with socket connections forbidden. They
 cover payloads, minimum/strict amounts, ambiguity, receipt recovery/pagination,
 signature tampering, capture/refund checks, scope isolation, redaction and durable
 service recovery/completion. Real test-mode validation, production transport,
-merchant binding, secure ingress, webhook infrastructure and Flutter remain deferred.
+merchant binding, secure ingress and Flutter remain deferred.
+
+## Phase B: durable offline webhook ingestion and recovery
+
+No provider is selected automatically. Normal server startup and customer HTTP
+routes are unchanged, and no webhook route, scheduler, daemon or public listener
+has been added. All worker entry points require explicit service/provider injection.
+Use fake providers or mocked HTTP only in this milestone; no credentials are needed.
+
+Initialization adds three tables inside the existing atomic checkout/payment
+migration: `payment_webhooks`, `payment_webhook_conflicts` and
+`payment_recovery_jobs`. Stop older writers before migration. This code does not
+rewrite payment, checkout, bill or customer identities.
+
+The inbox stores an internal ID, provider scope/event ID, event type, SHA-256
+payload digest, authenticated raw bytes, provider order/payment IDs, received time,
+processing state/count, last attempt time, next eligible retry time, claim token/
+expiry, sanitized error code and processed time. Timestamps use integer Unix seconds.
+Scoped event IDs are unique. Raw evidence/identity cannot be updated, deleted or
+replaced. Conflicting authenticated bodies are retained separately under the inbox
+record, with their digests and normalized identifiers. They never overwrite the
+original evidence. Protect the SQLite file and backups: raw provider bodies may
+contain personal information. Diagnostics never return those bodies or signatures.
+
+`WebhookIngestor(provider).ingest(raw_bytes, signature, event_id=delivery_id)` calls
+the adapter's `authenticate_webhook` before opening a writer transaction. Razorpay
+uses its existing raw-byte HMAC verification and requires the event ID extracted
+from `x-razorpay-event-id`. Authentication returns an `AuthenticatedWebhook` with
+scope, event/type and order/payment identifiers, not a payment result. The fake
+uses a signed offline JSON envelope containing event_id, event_type, order_id and
+payment_id. Its older two-field signature helper remains supported for existing tests.
+Malformed, oversized, invalidly signed or mismatched-scope deliveries are rejected.
+
+Only after `BEGIN IMMEDIATE`, evidence insertion and successful COMMIT does ingestion
+return an acceptance result. Identical duplicates return the existing ID/state.
+Same-ID/different-body deliveries retain the new evidence and quarantine the inbox
+record, including one previously processed; already committed payment completion
+is never reversed. Database/commit failure raises, so a future HTTP boundary must
+not acknowledge success. Ingestion performs no payment finalization or provider I/O.
+The event-ID header remains unsigned: replay with a different header can produce
+another inbox record, but exact persisted payment identity makes completion idempotent.
+
+### Explicit processing and claims
+
+Construct `WebhookProcessor({provider.scope: payment_service})` and call
+`run_once(webhook_id)` or `run_batch(limit=20, after_id=0)`. A batch accepts at most
+100 records and returns `(webhook_id, outcome)` pairs. Use the returned IDs as
+cursors for further bounded batches; no unbounded drain loop runs automatically.
+
+States are RECEIVED -> PROCESSING -> PROCESSED, RETRYABLE or QUARANTINED.
+Eligible RETRYABLE records return to PROCESSING. Each atomic claim increments the
+attempt count and gets a fresh random token and lease. Defaults are a 120-second
+lease, 30-second retry delay and five total attempts (`work.RetryPolicy`). No sleeps
+or external scheduling happen in this library. Exhausted budgets quarantine work.
+PROCESSED and QUARANTINED are terminal, except digest conflicts may quarantine a
+PROCESSED inbox record. No API for clearing quarantine or forcing payment success exists.
+
+PROCESSING records are not reclaimed automatically. After inspecting an interrupted
+worker, explicitly pass `reclaim_expired=True`; only an expired lease can be reclaimed.
+Worker clocks must share the host's Unix-time basis. Tokens and expiry are rechecked
+inside the same SQLite transactions that save verification and complete payment.
+Expired/superseded claims and concurrent quarantine cannot authorize those writes.
+A provider response arriving after claim loss is discarded. No network call holds
+a SQLite writer transaction. Application or database failures retain/retry durable
+work; raw exception strings are never persisted or logged by these workers.
+
+The processor resolves only the configured scope and exact persisted order, then
+uses `PaymentService.verify_attempt` for an independent provider fetch and the
+existing `store.save_verified` checks. Callback verification shares that same path.
+Only `complete_paid_checkout` can consume VERIFIED evidence and atomically finish
+the exact checkout/session. No amount-based matching, generation rebinding, payment
+reservation replacement or automatic cancellation/cart release is introduced.
+Unknown orders remain RETRYABLE, then quarantined when the configured budget expires.
+Noncaptured or temporarily unverifiable facts retry within that budget. Identity
+conflicts quarantine immediately. A webhook's stated status never decides payment.
+
+### Crash behavior
+
+- Before ingestion commit: rollback/no acknowledgement; provider delivery can retry.
+- After ingestion commit or lost acknowledgement: evidence survives and duplicate
+  ingestion returns the same record.
+- During fetch/before verification commit: reclaim and independently fetch again.
+- After VERIFIED commit/before completion: retry the exact persisted completion;
+  a provider outage does not erase authoritative verification.
+- After completion/before PROCESSED: same-payment replay marks the inbox processed
+  without fetching again, re-completing, or repeating the projection hook.
+- A delayed failure cannot downgrade VERIFIED/COMPLETED. Different payment evidence
+  for an already consumed order is quarantined.
+
+If a conflict arrives after verification was already committed, it stops that
+inbox worker, but does not erase independently verified SQLite payment evidence.
+Controlled payment recovery may still complete that exact verified attempt.
+
+### Controlled payment recovery
+
+`RecoveryWorker({provider.scope: payment_service}).run_once(payment_attempt_id)`
+accepts an existing attempt only. `run_batch([attempt_ids])` accepts 1–100 IDs.
+Durable per-attempt work records use the same claim, retry and explicit reclaim
+policy as the inbox. No public worker endpoint or automatic network timer exists.
+
+| Payment state | Recovery action |
+| --- | --- |
+| RESERVED | Existing atomic dispatch claim; only its winner may create once. |
+| CREATING | Provider recovery/lookup only; an empty lookup never authorizes POST. |
+| ORDER_READY | Preserve the order; process up to 20 authenticated inbox hints for that exact scope/order. Without a hint, wait for evidence. |
+| VERIFIED | Retry the existing atomic paid completion. |
+| COMPLETED | Return without a new fetch, payment or completion. |
+| FAILED | Return without resurrection. |
+
+Waiting for evidence can exhaust a recovery job's budget. This requires inspection;
+it does not mark the payment FAILED, clear its reservation, or prevent a later valid
+customer callback or separately processed webhook. Unresolved/quarantined records
+are retained. This milestone intentionally provides no operator override to mark
+paid, unfreeze a cart, create another order, or bypass provider verification.
+
+`store.order_request(scope, order_id)` is the trusted persisted-order callback for
+the Razorpay adapter and closes its SQLite connection before HTTP. Ordinary provider
+scope remains tied to explicitly configured credentials; real merchant binding and
+receipt-lookup visibility guarantees remain unverified Phase A limitations.
+
+SQLite completion always commits before the optional `completion_sync` hook. Only
+the fresh completion winner calls it. Failure leaves payment/session COMPLETED;
+controlled Firebase reconciliation remains available. A crash may omit delivery;
+this is not a durable Firebase outbox. No live Firebase calls, payment RTDB records,
+rules changes or automatic reconciliation were introduced.
+
+### Read-only operator inspection and deployment boundary
+
+Run `python -B -m edge.payment.diagnostics --database PATH --limit 100` locally.
+It opens an existing database in SQLite read-only/query-only mode and never runs
+migration or creates a missing file. Payment rows expose attempt ID, checkout ID,
+scope, state, recovery status and sanitized reason. Inbox rows show internal IDs,
+scope/state, attempt count/time, reason and any exact matching attempt/checkout.
+Use `--after-attempt ID` and `--after-webhook ID` for bounded pagination. Reports
+exclude customer identity, raw bodies, signatures, tokens, API/webhook secrets and
+claim tokens. Errors are generic. There is no mutating diagnostic command.
+
+Future HTTPS ingress requires a separately approved deployment, authenticated raw
+body handling, strict request-size limits, signature headers, acknowledgement only
+after durable commit, protected SQLite storage, merchant/test-mode validation and
+operational retry/quarantine monitoring. Genuine provider webhooks use signatures,
+not customer bearer tokens. Do not expose the current LAN server or enable real
+Razorpay transport as part of Phase B. Phase C and Flutter integration remain deferred.

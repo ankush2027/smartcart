@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
-from .provider import (InvalidEvidence, OrderRejected, OrderRequest, ProviderOrder,
+from .provider import (AuthenticatedWebhook, InvalidEvidence, OrderRejected, OrderRequest, ProviderOrder,
                        ProviderPayment, ProviderUnavailable)
 
 
@@ -239,3 +239,9 @@ class RazorpayProvider:
         except Exception:
             raise InvalidEvidence('Invalid webhook event') from None
         return event_id, payment['id']
+
+    def authenticate_webhook(self, body, signature, *, event_id):
+        self.verify_webhook(body, signature, event_id=event_id)
+        event = _decode(body)
+        payment = event['payload']['payment']['entity']
+        return AuthenticatedWebhook(self.scope, event_id, event['event'], payment['order_id'], payment['id'])

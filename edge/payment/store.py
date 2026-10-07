@@ -1,5 +1,5 @@
 """SQLite payment authority. Every mutation uses one short writer transaction."""
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 import sqlite3
 from uuid import uuid4
 
@@ -231,8 +231,10 @@ def _transition(conn, attempt, state, **fields):
     return _attempt(conn, attempt['payment_attempt_id'])
 
 
-def claim_dispatch(attempt_id):
+def claim_dispatch(attempt_id, *, guard=None):
     with _transaction(attempt_id) as (conn, attempt, checkout, session):
+        if guard is not None:
+            guard(conn)
         if attempt['state'] != 'RESERVED':
             return attempt, False
         return _transition(conn, attempt, 'CREATING'), True
@@ -248,8 +250,10 @@ def _matches(attempt, result):
         raise PaymentError('payment_evidence_mismatch', 'Provider evidence does not match the exact checkout.')
 
 
-def save_order(attempt_id, order):
+def save_order(attempt_id, order, *, guard=None):
     with _transaction(attempt_id) as (conn, attempt, checkout, session):
+        if guard is not None:
+            guard(conn)
         _matches(attempt, order)
         if attempt['provider_order_id'] is not None:
             if attempt['provider_order_id'] != order.order_id:
@@ -260,17 +264,21 @@ def save_order(attempt_id, order):
         return _transition(conn, attempt, 'ORDER_READY', provider_order_id=order.order_id, error_code=None)
 
 
-def creation_problem(attempt_id, *, rejected=False):
+def creation_problem(attempt_id, *, rejected=False, guard=None):
     with _transaction(attempt_id) as (conn, attempt, checkout, session):
+        if guard is not None:
+            guard(conn)
         if attempt['state'] != 'CREATING':
             return attempt  # A concurrent verified result must never be downgraded.
         return _transition(conn, attempt, 'FAILED' if rejected else 'CREATING',
                            error_code='provider_rejected' if rejected else 'recovery_required')
 
 
-def save_verified(attempt_id, payment):
+def save_verified(attempt_id, payment, *, guard=None):
     """Internal adapter-result sink; never exposed as a customer authorization API."""
     with _transaction(attempt_id) as (conn, attempt, checkout, session):
+        if guard is not None:
+            guard(conn)
         _matches(attempt, payment)
         if (attempt['provider_order_id'] != payment.order_id
                 or type(payment.payment_id) is not str or not 1 <= len(payment.payment_id) <= 256):
@@ -287,13 +295,15 @@ def save_verified(attempt_id, payment):
         return _transition(conn, attempt, 'VERIFIED', provider_payment_id=payment.payment_id, verified_at=now)
 
 
-def complete_paid_checkout(checkout_id, payment_attempt_id):
+def complete_paid_checkout(checkout_id, payment_attempt_id, *, guard=None):
     """Consume persisted verification and complete exact checkout/session atomically.
 
     Returns (public result, newly_completed). No external I/O is performed here.
     """
     _validate_id(checkout_id)
     with _transaction(payment_attempt_id) as (conn, attempt, checkout, session):
+        if guard is not None:
+            guard(conn)
         if attempt['checkout_id'] != checkout_id:
             raise PaymentError('payment_checkout_mismatch', 'Payment belongs to a different checkout.')
         if attempt['state'] not in ('VERIFIED', 'COMPLETED'):
@@ -313,3 +323,25 @@ def complete_paid_checkout(checkout_id, payment_attempt_id):
                     payment_attempt_id=attempt['payment_attempt_id'], state='COMPLETED',
                     amount_paise=attempt['amount_paise'], currency=attempt['currency'],
                     completed_at=attempt['completed_at']), fresh
+
+
+def read_attempt(attempt_id):
+    """Internal worker read; mutations still validate the complete lifecycle."""
+    with closing(get_connection()) as conn:
+        return _attempt(conn, attempt_id)
+
+
+def find_order(provider_scope, order_id):
+    with closing(get_connection()) as conn:
+        return _one(conn, 'SELECT * FROM payment_attempts WHERE provider_scope=? AND provider_order_id=?',
+                    (provider_scope, order_id))
+
+
+def order_request(provider_scope, order_id):
+    """Trusted adapter lookup; connection closes before any provider I/O."""
+    from .provider import OrderRequest
+    row = find_order(provider_scope, order_id)
+    if row is None:
+        return None
+    return OrderRequest(row['payment_attempt_id'], row['checkout_id'], row['provider_scope'],
+                        row['amount_paise'], row['currency'])

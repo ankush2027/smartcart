@@ -33,7 +33,13 @@ class PaymentService:
     def start(self, session_id, checkout_id, uid, request_key):
         attempt = store.begin_payment(session_id, checkout_id, uid, request_key,
                                       provider_scope=self.provider.scope, max_paise=self.max_paise)
-        attempt, claimed = store.claim_dispatch(attempt['payment_attempt_id'])
+        return self.recover_creation(attempt['payment_attempt_id'])
+
+    def recover_creation(self, attempt_id, *, guard=None):
+        """Internal recovery shares the one-time initial dispatch claim."""
+        fencing = {} if guard is None else {'guard': guard}
+        self._request(store.read_attempt(attempt_id))
+        attempt, claimed = store.claim_dispatch(attempt_id, **fencing)
         if attempt['state'] != 'CREATING':
             return public_payment(attempt)
         request = self._request(attempt)
@@ -41,14 +47,14 @@ class PaymentService:
             order = (self.provider.create_order(request) if claimed
                      else self.provider.recover_order(request))
         except OrderRejected:
-            return public_payment(store.creation_problem(attempt['payment_attempt_id'], rejected=True))
+            return public_payment(store.creation_problem(attempt['payment_attempt_id'], rejected=True, **fencing))
         except Exception:
             # Exceptions, including unexpected adapter failures, do not prove
             # that the provider failed to create an order. Never log raw data.
-            return public_payment(store.creation_problem(attempt['payment_attempt_id']))
+            return public_payment(store.creation_problem(attempt['payment_attempt_id'], **fencing))
         if order is None:
-            return public_payment(store.creation_problem(attempt['payment_attempt_id']))
-        return public_payment(store.save_order(attempt['payment_attempt_id'], order))
+            return public_payment(store.creation_problem(attempt['payment_attempt_id'], **fencing))
+        return public_payment(store.save_order(attempt['payment_attempt_id'], order, **fencing))
 
     def status(self, session_id, checkout_id, uid):
         return public_payment(store.read_payment(session_id, checkout_id, uid))
@@ -61,6 +67,24 @@ class PaymentService:
             raise PaymentError('payment_not_ready', 'Recover the existing payment order first.')
         try:
             payment_id = self.provider.verify_client_evidence(attempt['provider_order_id'], evidence)
+        except InvalidEvidence:
+            raise PaymentError('invalid_payment_evidence', 'Payment evidence could not be authenticated.', 400) from None
+        except Exception:
+            raise PaymentError('payment_verification_unavailable', 'Payment verification is unavailable; retry safely.', 503) from None
+        return self.verify_attempt(attempt['payment_attempt_id'], payment_id)
+
+    def verify_attempt(self, attempt_id, payment_id, *, order_id=None, guard=None):
+        """Internal authenticated hints use the same fetch/SQLite verification sink.
+
+        Never expose this method as an unauthenticated customer endpoint.
+        """
+        attempt = store.read_attempt(attempt_id)
+        self._request(attempt)
+        if order_id is not None and order_id != attempt['provider_order_id']:
+            raise PaymentError('payment_evidence_mismatch', 'Order does not match the persisted attempt.')
+        if attempt['state'] not in ('ORDER_READY', 'VERIFIED', 'COMPLETED'):
+            raise PaymentError('payment_not_ready', 'Recover the existing payment order first.')
+        try:
             payment = self.provider.fetch_payment(payment_id)
         except InvalidEvidence:
             raise PaymentError('invalid_payment_evidence', 'Payment evidence could not be authenticated.', 400) from None
@@ -68,10 +92,11 @@ class PaymentService:
             raise PaymentError('payment_verification_unavailable', 'Payment verification is unavailable; retry safely.', 503) from None
         if payment.payment_id != payment_id:
             raise PaymentError('payment_evidence_mismatch', 'Provider returned a different payment.')
-        return public_payment(store.save_verified(attempt['payment_attempt_id'], payment))
+        return public_payment(store.save_verified(attempt_id, payment, **({} if guard is None else {'guard': guard})))
 
-    def complete(self, checkout_id, attempt_id):
-        result, fresh = store.complete_paid_checkout(checkout_id, attempt_id)
+    def complete(self, checkout_id, attempt_id, *, guard=None):
+        self._request(store.read_attempt(attempt_id))
+        result, fresh = store.complete_paid_checkout(checkout_id, attempt_id, **({} if guard is None else {'guard': guard}))
         result['projection_sync'] = 'not_attempted'
         if fresh and self.completion_sync is not None:
             try:

@@ -131,9 +131,13 @@ def initialize_database():
         # must be stopped. Import here keeps initialization free of import cycles.
         from edge.billing.checkout import migrate_checkouts
         from edge.payment.store import migrate_payments
+        from edge.payment.webhook_store import migrate_webhooks
+        from edge.payment.recovery import migrate_recovery
         connection.execute('BEGIN IMMEDIATE')
         migrate_checkouts(connection)
         migrate_payments(connection)
+        migrate_webhooks(connection)
+        migrate_recovery(connection)
         connection.commit()
     except BaseException:
         connection.rollback()
