@@ -1,18 +1,28 @@
+import os
 import sqlite3
 from pathlib import Path
 
 
-DATABASE_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "smartcart.db"
+DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "smartcart.db"
+DATABASE_PATH = Path(os.environ.get("SMARTCART_DATABASE_PATH", str(DEFAULT_DATABASE_PATH)))
+
+
+def get_database_path() -> Path:
+    """Return effective database path, prioritizing environment variable if set."""
+    env_path = os.environ.get("SMARTCART_DATABASE_PATH")
+    if env_path:
+        return Path(env_path)
+    return DATABASE_PATH
 
 
 def get_connection():
     """
     Create and return a connection to the SmartCart SQLite database.
     """
+    db_path = get_database_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(db_path)
     connection.execute('PRAGMA foreign_keys = ON')
 
     return connection

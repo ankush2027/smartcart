@@ -491,6 +491,11 @@ class CartSession:
         return self._session_id
 
     @property
+    def checkout_generation(self) -> int:
+        """The authoritative checkout generation hydrated for this cart session."""
+        return self._checkout_generation
+
+    @property
     def cart_state(self) -> CartState:
         """
         The current in-memory CartState.

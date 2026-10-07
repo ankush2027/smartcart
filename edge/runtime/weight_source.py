@@ -24,6 +24,7 @@ class SimulatedWeightSource:
         self.sensor = WeightSensor()
         self.sensor.current_weight = initial_weight
         self.baseline = self.sensor.read_weight()
+        self._last_event = None
 
     def inject_delta(self, delta):
         if not math.isfinite(delta):
@@ -36,6 +37,11 @@ class SimulatedWeightSource:
         if event is not None:
             event.timestamp = self.clock()
             self.baseline = current
+            self._last_event = event
+        return event
+
+    def poll(self):
+        event, self._last_event = self._last_event, None
         return event
 
     def close(self):
@@ -68,3 +74,60 @@ class StdinSimulatedWeightSource(SimulatedWeightSource):
         if not line:
             return None  # Blank record is not a delta or EOF.
         return self.inject_delta(float(line))
+
+
+class SerialWeightSource:
+    """
+    Structural boundary shell for future physical load-cell integration:
+        Load Cell -> HX711 -> Arduino Mega -> USB Serial -> SerialWeightSource -> WeightEvent
+
+    WARNING: Physical load-cell/HX711 input is NOT implemented in this milestone.
+    This class defines the dependency boundary only. It intentionally contains NO
+    guessed serial protocol, baud rate, calibration, or filtering logic.
+    """
+
+    def __init__(self, port: str | None = None, baudrate: int | None = None) -> None:
+        if not port:
+            raise NotImplementedError(
+                "SerialWeightSource: physical load-cell/HX711 hardware is not implemented "
+                "in this milestone. Port configuration is required for future hardware integration."
+            )
+        # Even if a port string is passed, do not pretend hardware is functional
+        raise NotImplementedError(
+            "SerialWeightSource: physical load-cell/HX711 hardware driver is not implemented "
+            "in this milestone. Use SimulatedWeightSource or StdinSimulatedWeightSource for software testing."
+        )
+
+    def poll(self) -> WeightEvent | None:
+        raise NotImplementedError("Physical sensor hardware not connected")
+
+    def close(self) -> None:
+        pass
+
+
+def create_weight_source(source_type: str = "simulated", **kwargs) -> WeightSource:
+    """
+    Factory for constructing WeightSource implementations.
+
+    Supported types:
+    - 'simulated' (default): in-memory SimulatedWeightSource
+    - 'stdin': StdinSimulatedWeightSource for interactive manual input
+    - 'serial': SerialWeightSource (fails clearly as hardware is not yet implemented)
+    """
+    if source_type == "simulated":
+        return SimulatedWeightSource(
+            initial_weight=kwargs.get("initial_weight", 500.0),
+            clock=kwargs.get("clock", datetime.now),
+        )
+    elif source_type == "stdin":
+        return StdinSimulatedWeightSource(
+            initial_weight=kwargs.get("initial_weight", 500.0),
+            clock=kwargs.get("clock", datetime.now),
+        )
+    elif source_type == "serial":
+        return SerialWeightSource(
+            port=kwargs.get("port"),
+            baudrate=kwargs.get("baudrate"),
+        )
+    else:
+        raise ValueError(f"Unknown weight source type: {source_type!r}")
