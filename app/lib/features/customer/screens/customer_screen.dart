@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../auth/controllers/auth_controller.dart';
+import '../../checkout/controllers/checkout_controller.dart';
+import '../../checkout/data/checkout_repository.dart';
+import '../../checkout/widgets/checkout_panel.dart';
 import '../controllers/cart_controller.dart';
 import '../data/cart_repository.dart';
 import '../models/customer_cart.dart';
@@ -14,10 +17,14 @@ class CustomerScreen extends StatefulWidget {
     required this.auth,
     required this.repository,
     this.pairing,
+    this.checkoutRepository,
   });
   final AuthController auth;
   final CartRepository repository;
   final CartPairingService? pairing;
+
+  /// Optional checkout repository. When null, checkout is unavailable.
+  final CheckoutRepository? checkoutRepository;
 
   @override
   State<CustomerScreen> createState() => _CustomerScreenState();
@@ -25,6 +32,7 @@ class CustomerScreen extends StatefulWidget {
 
 class _CustomerScreenState extends State<CustomerScreen> {
   late final CartController _cart;
+  CheckoutController? _checkout;
   final _cartId = TextEditingController();
   final _form = GlobalKey<FormState>();
 
@@ -32,64 +40,78 @@ class _CustomerScreenState extends State<CustomerScreen> {
   void initState() {
     super.initState();
     _cart = CartController(widget.repository, pairing: widget.pairing)..load();
+    final repo = widget.checkoutRepository;
+    if (repo != null) {
+      _checkout = CheckoutController(repo);
+    }
   }
 
   @override
   void dispose() {
     _cart.dispose();
+    _checkout?.dispose();
     _cartId.dispose();
     super.dispose();
   }
 
+  String _idempotencyKey() =>
+      'flutter-${DateTime.now().microsecondsSinceEpoch}';
+
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([_cart, widget.auth]),
-    builder: (context, child) => Scaffold(
-      appBar: AppBar(title: const Text('SmartCart')),
-      body: SafeArea(
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 600),
-            child: ListView(
-              padding: const EdgeInsets.all(24),
-              children: [
-                Text(
-                  'Customer Cart',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 12),
-                if (_cart.isDemo) ...[
-                  const Text(
-                    'Development demo • Sample cart and prices. '
-                    'No live SmartCart connection.',
+  Widget build(BuildContext context) {
+    final listenables = <Listenable>[_cart, widget.auth];
+    final checkout = _checkout;
+    if (checkout != null) listenables.add(checkout);
+
+    return ListenableBuilder(
+      listenable: Listenable.merge(listenables),
+      builder: (context, child) => Scaffold(
+        appBar: AppBar(title: const Text('SmartCart')),
+        body: SafeArea(
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 600),
+              child: ListView(
+                padding: const EdgeInsets.all(24),
+                children: [
+                  Text(
+                    'Customer Cart',
+                    style: Theme.of(context).textTheme.headlineMedium,
                   ),
+                  const SizedBox(height: 12),
+                  if (_cart.isDemo) ...[
+                    const Text(
+                      'Development demo • Sample cart and prices. '
+                      'No live SmartCart connection.',
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                  ..._content(context),
                   const SizedBox(height: 24),
-                ],
-                ..._content(context),
-                const SizedBox(height: 24),
-                if (widget.auth.error != null)
-                  Semantics(
-                    liveRegion: true,
-                    child: Text(
-                      widget.auth.error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
+                  if (widget.auth.error != null)
+                    Semantics(
+                      liveRegion: true,
+                      child: Text(
+                        widget.auth.error!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
                       ),
                     ),
+                  OutlinedButton.icon(
+                    onPressed: widget.auth.isBusy ? null : widget.auth.signOut,
+                    icon: const Icon(Icons.logout),
+                    label: Text(widget.auth.isBusy ? 'Signing out…' : 'Logout'),
                   ),
-                OutlinedButton.icon(
-                  onPressed: widget.auth.isBusy ? null : widget.auth.signOut,
-                  icon: const Icon(Icons.logout),
-                  label: Text(widget.auth.isBusy ? 'Signing out…' : 'Logout'),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 
   List<Widget> _content(BuildContext context) {
     switch (_cart.state) {
@@ -171,6 +193,11 @@ class _CustomerScreenState extends State<CustomerScreen> {
         ];
       case CartLoadState.ready:
         final cart = _cart.cart!;
+        final checkout = _checkout;
+
+        // Derive session ID from displayId when it is a numeric session key.
+        final sessionId = int.tryParse(cart.displayId);
+
         return [
           Text(
             cart.status == CartStatus.active ? 'Active Cart' : 'Completed Cart',
@@ -195,6 +222,54 @@ class _CustomerScreenState extends State<CustomerScreen> {
             ...cart.items.map((item) => CartItemCard(item: item)),
           const SizedBox(height: 16),
           BillSummary(cart: cart),
+
+          // Checkout panel — only when active, checkout repo is configured,
+          // and session ID is available from the RTDB path.
+          if (cart.status == CartStatus.active &&
+              checkout != null &&
+              sessionId != null) ...[
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 8),
+            CheckoutPanel(
+              controller: checkout,
+              sessionId: sessionId,
+              totalPaise: cart.totalPaise,
+              isDemo: _cart.isDemo,
+              onCheckout: () => checkout.beginCheckout(
+                sessionId: sessionId,
+                idempotencyKey: _idempotencyKey(),
+              ),
+              onCancel: () async {
+                final cid = checkout.checkoutResult?.checkoutId;
+                if (cid != null) {
+                  await checkout.cancelCheckout(
+                    sessionId: sessionId,
+                    checkoutId: cid,
+                  );
+                }
+              },
+              onStartPayment: () async {
+                final cid = checkout.checkoutResult?.checkoutId;
+                if (cid != null) {
+                  await checkout.startPayment(
+                    sessionId: sessionId,
+                    checkoutId: cid,
+                    idempotencyKey: _idempotencyKey(),
+                  );
+                }
+              },
+              onDemoPayment: () async {
+                final cid = checkout.checkoutResult?.checkoutId;
+                if (cid != null) {
+                  await checkout.simulateDemoPayment(
+                    sessionId: sessionId,
+                    checkoutId: cid,
+                  );
+                }
+              },
+            ),
+          ],
         ];
     }
   }

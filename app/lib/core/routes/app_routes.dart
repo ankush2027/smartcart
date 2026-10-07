@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../features/auth/controllers/auth_controller.dart';
 import '../../features/auth/screens/login_screen.dart';
 import '../../features/auth/models/auth_user.dart';
+import '../../features/checkout/data/checkout_repository.dart';
 import '../../features/customer/data/cart_repository.dart';
 import '../../features/customer/screens/customer_screen.dart';
 import '../../features/customer/services/cart_pairing_service.dart';
@@ -18,6 +19,7 @@ abstract final class AppRoutes {
     CartRepository cartRepository,
     ManagerRepository managerRepository, {
     CartPairingService? pairing,
+    CheckoutRepository? checkoutRepository,
   }) => {
     authentication: (_) => ListenableBuilder(
       listenable: controller,
@@ -31,6 +33,7 @@ abstract final class AppRoutes {
                 auth: controller,
                 repository: cartRepository,
                 pairing: pairing,
+                checkoutRepository: checkoutRepository,
               )
             : ManagerScreen(
                 key: ValueKey(user.uid),
