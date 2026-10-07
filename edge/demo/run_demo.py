@@ -22,6 +22,7 @@ import threading
 
 from edge.demo.composition import create_demo_app, create_demo_payment_service
 from edge.demo.prepare_demo_db import DEFAULT_DEMO_DB_PATH, prepare_demo_database
+from edge.firebase import client as firebase_client
 from edge.runtime.cart_runtime import resume_session
 from edge.runtime.supervisor import CartSupervisor
 from edge.runtime.weight_source import StdinSimulatedWeightSource, create_weight_source
@@ -67,6 +68,18 @@ def main(argv=None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    # Use the same Admin configuration as normal startup before any requests
+    # or runtime workers can run. Never log SDK errors containing credentials.
+    try:
+        firebase_client.initialize()
+        firebase_ref = firebase_client.get_reference("/")
+    except Exception:
+        logger.error(
+            "Demo startup failed: check SMARTCART_FIREBASE_URL and "
+            "GOOGLE_APPLICATION_CREDENTIALS for valid backend Firebase configuration."
+        )
+        return 1
+
     db_path = Path(args.db_path).resolve()
     os.environ["SMARTCART_DATABASE_PATH"] = str(db_path)
 
@@ -77,7 +90,7 @@ def main(argv=None) -> int:
     print_banner(args.cart_id, db_path, args.host, args.port)
 
     # 1. Initialize demo payment composition
-    payment_service, fake_provider = create_demo_payment_service()
+    payment_service, fake_provider = create_demo_payment_service(firebase_ref=firebase_ref)
 
     # 2. Build demo Flask application
     app = create_demo_app(
@@ -98,7 +111,7 @@ def main(argv=None) -> int:
             from edge.runtime.cart_runtime import CartRuntime
 
             detector = YOLODetector(model_path=DEFAULT_MODEL_PATH)
-            session = resume_session(args.cart_id, detector, firebase_ref=None)
+            session = resume_session(args.cart_id, detector, firebase_ref=firebase_ref)
             motion = MOG2Processor()
             camera = open_camera(0)
             weights = StdinSimulatedWeightSource(500.0)

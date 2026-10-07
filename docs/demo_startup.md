@@ -34,6 +34,20 @@ In this mode:
 
 ### B. Explicit Software-Demo Startup
 
+Demo mode requires the same valid backend Firebase configuration as normal startup:
+`SMARTCART_FIREBASE_URL` and `GOOGLE_APPLICATION_CREDENTIALS` (the path to a
+service-account file kept outside source control). Do not put Admin credentials
+in Flutter. Firebase Admin and the RTDB root reference are initialized before
+database preparation, runtime workers, or HTTP serving. Invalid or missing
+configuration stops startup with a sanitized error; it never disables authentication.
+
+Protected requests still require the customer's Firebase ID token. The supervised
+runtime passes the initialized RTDB root to `CartSession`, so successful ADD/REMOVE
+mutations use the existing post-commit Firebase synchronization path. A Firebase
+write failure does not undo SQLite billing. Demo payment completion uses the same
+root for its existing reconciliation hook; a projection failure does not undo
+verified payment completion. FakeProvider remains explicit demo-only.
+
 The explicit demo composition wires `PaymentStore`, `FakeProvider`, and `PaymentService` with a completion projection hook, while operating on an **isolated demo database** (`data/smartcart_demo.db`):
 
 ```bash
