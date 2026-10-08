@@ -31,6 +31,7 @@ class PairingFailure implements Exception {
       'Cart connection timed out. Check your connection and try again.',
     'network' =>
       'Cannot reach the cart service. Check your connection and try again.',
+    'server_unavailable' => 'Cart service is temporarily unavailable. Please try again shortly.',
     _ => 'Unable to connect the cart. Please try again.',
   };
 }
@@ -149,6 +150,9 @@ class HttpCartPairingService implements CartPairingService {
       }
       if (response.statusCode == 401 || response.statusCode == 403) {
         throw const PairingFailure('invalid_token');
+      }
+      if (response.statusCode >= 500) {
+        throw const PairingFailure('server_unavailable');
       }
       final Object? decoded;
       try {

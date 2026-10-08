@@ -7,6 +7,15 @@ abstract interface class AuthRepository {
   Future<void> signOut();
 }
 
+/// Registration uses the same authenticated session and server-issued roles.
+abstract interface class CustomerRegistration {
+  Future<AuthUser> signUp({
+    required String fullName,
+    required String email,
+    required String password,
+  });
+}
+
 /// Optional development capability; real authentication resolves its own roles.
 abstract interface class DevelopmentRoleSelection {
   UserRole get selectedRole;

@@ -10,6 +10,7 @@ import '../models/customer_cart.dart';
 import '../services/cart_pairing_service.dart';
 import '../widgets/bill_summary.dart';
 import '../widgets/cart_item_card.dart';
+import '../widgets/cart_qr_scanner.dart';
 
 class CustomerScreen extends StatefulWidget {
   const CustomerScreen({
@@ -19,6 +20,7 @@ class CustomerScreen extends StatefulWidget {
     this.pairing,
     this.checkoutRepository,
     this.demoPaymentEnabled = const bool.fromEnvironment('SMARTCART_DEMO_PAYMENT'),
+    this.cameraBuilder,
   });
   final AuthController auth;
   final CartRepository repository;
@@ -28,6 +30,7 @@ class CustomerScreen extends StatefulWidget {
   final CheckoutRepository? checkoutRepository;
   // Explicit payment demo opt-in, independent of live Firebase cart discovery.
   final bool demoPaymentEnabled;
+  final CartCameraBuilder? cameraBuilder;
 
   @override
   State<CustomerScreen> createState() => _CustomerScreenState();
@@ -39,6 +42,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   final _cartId = TextEditingController();
   final _form = GlobalKey<FormState>();
   String? _sessionId;
+  bool _scanning = false;
 
   @override
   void initState() {
@@ -53,6 +57,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   void _sessionChanged() {
     final id = _cart.cart?.displayId;
+    if (id != null) _scanning = false;
     if (id != null && id != _sessionId) {
       _sessionId = id;
       _checkout?.reset();
@@ -128,6 +133,19 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   List<Widget> _content(BuildContext context) {
+    if (_scanning && _cart.state == CartLoadState.noSession) {
+      return [CartQrScanner(
+        cameraBuilder: widget.cameraBuilder,
+        onManual: () => setState(() => _scanning = false),
+        onCart: (id) {
+          if (!mounted || widget.auth.user == null ||
+              _cart.state != CartLoadState.noSession) return;
+          setState(() => _scanning = false);
+          _cartId.text = id;
+          _cart.pair(id);
+        },
+      )];
+    }
     final receipt = _checkout;
     if (receipt != null &&
         receipt.phase == CheckoutControllerPhase.completed &&
@@ -182,6 +200,14 @@ class _CustomerScreenState extends State<CustomerScreen> {
           const Text('There is currently no active SmartCart session.'),
           if (_cart.canPair) ...[
             const SizedBox(height: 16),
+            FilledButton.icon(
+              key: const Key('scan_cart'),
+              onPressed: _cart.pairingBusy ? null : () => setState(() => _scanning = true),
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Scan Cart QR Code'),
+            ),
+            const SizedBox(height: 12),
+            const Text('Or enter the Cart ID printed on the cart.'),
             Form(
               key: _form,
               child: TextFormField(
@@ -203,6 +229,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
             ],
             const SizedBox(height: 16),
             FilledButton(
+              key: const Key('connect_cart'),
               onPressed: _cart.pairingBusy
                   ? null
                   : () {
