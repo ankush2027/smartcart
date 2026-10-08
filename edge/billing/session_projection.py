@@ -58,7 +58,7 @@ def read_session_projection(session_id: int) -> SessionProjection:
     This snapshot does not prevent later writers; recovery requires quiescence.
     """
     validate_session_id(session_id)
-    connection = sqlite3.connect(database.DATABASE_PATH.resolve().as_uri() + '?mode=ro', uri=True)
+    connection = sqlite3.connect(database.get_database_path().resolve().as_uri() + '?mode=ro', uri=True)
     try:
         connection.execute('BEGIN')
         meta = connection.execute(

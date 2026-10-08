@@ -61,7 +61,11 @@ def main(argv=None) -> int:
     parser.add_argument("--db-path", default=str(DEFAULT_DEMO_DB_PATH), help="Isolated SQLite database path")
     parser.add_argument("--prepare-db", action="store_true", help="Prepare/seed isolated demo database before startup")
     parser.add_argument("--with-supervisor", action="store_true", help="Start background CartSupervisor for --cart-id")
+    parser.add_argument("--software-input", action="store_true", help="Demo console with synthetic motion/vision; requires supervisor")
+    parser.add_argument("--reconcile-demo-projections", action="store_true", help="Repair this dedicated demo cart from SQLite; stop ALL namespace writers first")
     args = parser.parse_args(argv)
+    if args.software_input and not args.with_supervisor:
+        parser.error('--software-input requires --with-supervisor')
 
     logging.basicConfig(
         level=logging.INFO,
@@ -87,6 +91,15 @@ def main(argv=None) -> int:
         logger.info("Preparing isolated demo database at %s...", db_path)
         prepare_demo_database(db_path)
 
+    if args.reconcile_demo_projections:
+        from edge.demo.reconcile import reconcile_demo_cart
+        try:
+            removed, rebuilt = reconcile_demo_cart(args.cart_id, root=firebase_ref)
+            logger.info('Demo repair: removed %d active orphans; rebuilt %d sessions', removed, rebuilt)
+        except Exception:
+            logger.error('Demo projection reconciliation failed; startup stopped. Stop all writers and inspect identities/configuration.')
+            return 1
+
     print_banner(args.cart_id, db_path, args.host, args.port)
 
     # 1. Initialize demo payment composition
@@ -103,8 +116,17 @@ def main(argv=None) -> int:
 
     if args.with_supervisor:
         logger.info("Initializing CartSupervisor for %r...", args.cart_id)
+        console = None
+        if args.software_input:
+            from edge.demo.software_input import SoftwareConsole, SoftwareDemoRuntime
+            console = SoftwareConsole()
+            logger.warning('Software fixtures enabled: synthetic motion/recognition, real resolver/billing. No camera or YOLO accuracy test.')
+            threading.Thread(target=console.read, daemon=True).start()
 
         def runtime_factory(session_id: int):
+            if console is not None:
+                return SoftwareDemoRuntime(cart_id=args.cart_id, session_id=session_id,
+                                           firebase_ref=firebase_ref, console=console)
             from edge.detection.camera import open_camera
             from edge.detection.mog2 import MOG2Processor
             from edge.model.yolo_detector import YOLODetector, DEFAULT_MODEL_PATH
