@@ -25,11 +25,26 @@ CustomerCart active(String id) => CustomerCart(
   totalPaise: 1000,
 );
 
-Future<void> tap(WidgetTester tester, String key) async {
+Future<void> tap(
+  WidgetTester tester,
+  String key, {
+  bool settleAfterTap = true,
+}) async {
   final target = find.byKey(Key(key));
-  await tester.ensureVisible(target);
-  await tester.tap(target);
+  await tester.scrollUntilVisible(
+    target,
+    200,
+    scrollable: find.byType(Scrollable),
+  );
+  // Scrolling updates the offset before the next frame lays out the widgets.
   await tester.pumpAndSettle();
+  expect(target.hitTestable(), findsOneWidget);
+  await tester.tap(target);
+  if (settleAfterTap) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+  }
 }
 
 void main() {
@@ -48,7 +63,7 @@ void main() {
     await controller.beginCheckout(sessionId: 1, idempotencyKey: 'checkout');
     await controller.startPayment(sessionId: 1, checkoutId: 42, idempotencyKey: 'payment');
     expect(controller.paymentAttempt!.state, PaymentState.creationFailed);
-    expect(controller.phase, CheckoutControllerPhase.frozen);
+    expect(controller.phase, CheckoutControllerPhase.recoveryRequired);
     expect(controller.error, isNotNull);
     await controller.simulateDemoPayment(sessionId: 1, checkoutId: 42);
     expect(repository.simulateDemoPaymentCalls, 0);
@@ -115,9 +130,7 @@ void main() {
       expect(find.byKey(const Key('demo_payment_button')), enabled ? findsOneWidget : findsNothing);
       expect(find.textContaining('Sample cart and prices'), findsNothing);
       if (enabled) {
-        await tester.ensureVisible(find.byKey(const Key('demo_payment_button')));
-        await tester.tap(find.byKey(const Key('demo_payment_button')));
-        await tester.pump();
+        await tap(tester, 'demo_payment_button', settleAfterTap: false);
         cart.events.add(null); // Completion projection beats backend response.
         await tester.pump();
         expect(find.text('Payment Successful'), findsNothing);

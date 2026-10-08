@@ -24,6 +24,7 @@ class CheckoutPanel extends StatelessWidget {
     required this.totalPaise,
     required this.isDemo,
     this.onCheckout,
+    this.onRefresh,
     this.onCancel,
     this.onStartPayment,
     this.onDemoPayment,
@@ -38,6 +39,7 @@ class CheckoutPanel extends StatelessWidget {
 
   // Optional overrides for idempotency key generation (for testing).
   final Future<void> Function()? onCheckout;
+  final Future<void> Function()? onRefresh;
   final Future<void> Function()? onCancel;
   final Future<void> Function()? onStartPayment;
   final Future<void> Function()? onDemoPayment;
@@ -85,6 +87,12 @@ class CheckoutPanel extends StatelessWidget {
     CheckoutControllerPhase phase,
   ) {
     switch (phase) {
+      case CheckoutControllerPhase.recovering:
+        return [const _LoadingRow(label: 'Checking checkout status…')];
+      case CheckoutControllerPhase.recoveryRequired:
+        return [
+          FilledButton(onPressed: onRefresh, child: const Text('Retry status')),
+        ];
       case CheckoutControllerPhase.shopping:
         return [
           FilledButton.icon(
@@ -160,12 +168,15 @@ class CheckoutPanel extends StatelessWidget {
             ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            key: const Key('cancel_checkout_button_payment'),
+            key: const Key('refresh_payment_button'),
             onPressed: phase == CheckoutControllerPhase.paymentReady
-                ? onCancel
+                ? onRefresh
                 : null,
             icon: const Icon(Icons.close),
-            label: const Text('Cancel Checkout'),
+            label: const Text('Refresh payment status'),
+          ),
+          const Text(
+            'Payment has started; checkout can no longer be cancelled.',
           ),
         ];
 

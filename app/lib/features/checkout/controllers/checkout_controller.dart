@@ -18,6 +18,8 @@ import '../models/checkout_models.dart';
 enum CheckoutControllerPhase {
   /// Customer is actively shopping; no checkout in progress.
   shopping,
+  recovering,
+  recoveryRequired,
 
   /// Checkout freeze request in flight.
   checkoutInFlight,
@@ -54,6 +56,108 @@ class CheckoutController extends ChangeNotifier {
   PaymentAttempt? _paymentAttempt;
   String? _error;
   bool _disposed = false;
+  String? _checkoutKey;
+  String? _paymentKey;
+  List<Map<String, dynamic>> items = const [];
+
+  Future<void> recover(int sessionId) async {
+    if (_disposed || _isBusy) return;
+    final generation = ++_generation;
+    _setPhase(CheckoutControllerPhase.recovering);
+    try {
+      await _readState(sessionId, generation);
+    } catch (_) {
+      if (!_disposed && generation == _generation) {
+        _setPhase(
+          CheckoutControllerPhase.recoveryRequired,
+          error: 'Unable to confirm checkout state. Check your connection and retry.',
+        );
+      }
+    }
+  }
+
+  Future<void> _readState(int sessionId, int generation) async {
+    final data = await _repository.readCheckoutState(sessionId: sessionId);
+    if (_disposed || generation != _generation) return;
+    final state = data['state'];
+    if (state == 'SHOPPING') {
+      _checkoutResult = null;
+      _paymentAttempt = null;
+      items = const [];
+      _setPhase(CheckoutControllerPhase.shopping);
+      return;
+    }
+    if (state != 'CHECKOUT_FROZEN' && state != 'COMPLETED') {
+      throw const FormatException('Invalid checkout state');
+    }
+    final result = CheckoutResult.fromJson(
+      Map<String, dynamic>.from(data['latest_checkout'] as Map),
+    );
+    if (result.sessionId != sessionId) {
+      throw const FormatException('Session mismatch');
+    }
+    _checkoutResult = result;
+    items = (data['items'] as List? ?? const [])
+        .map((item) => Map<String, dynamic>.from(item as Map))
+        .toList();
+    PaymentAttempt? attempt;
+    try {
+      attempt = await _repository.paymentStatus(
+        sessionId: sessionId,
+        checkoutId: result.checkoutId,
+      );
+    } on CheckoutFailure catch (failure) {
+      if (failure.code != 'payment_not_found' || state == 'COMPLETED') rethrow;
+    }
+    if (_disposed || generation != _generation) return;
+    _paymentAttempt = attempt;
+    if (attempt == null) {
+      _setPhase(CheckoutControllerPhase.frozen);
+    } else {
+      _acceptPayment(attempt);
+    }
+  }
+
+  void _acceptPayment(PaymentAttempt attempt) {
+    if (attempt.checkoutId != _checkoutResult?.checkoutId) {
+      throw const FormatException('Checkout mismatch');
+    }
+    _paymentAttempt = attempt;
+    if (attempt.isCompleted) {
+      _setPhase(CheckoutControllerPhase.completed);
+    } else if (attempt.state == PaymentState.orderReady ||
+        attempt.state == PaymentState.creating ||
+        attempt.state == PaymentState.verified) {
+      _setPhase(CheckoutControllerPhase.paymentReady);
+    } else {
+      _setPhase(
+        CheckoutControllerPhase.recoveryRequired,
+        error: attempt.state == PaymentState.creationFailed
+            ? 'Payment was rejected. Contact the cart operator; this reservation cannot be cancelled.'
+            : 'Payment is still being confirmed. Refresh its status before continuing.',
+      );
+    }
+  }
+
+  Future<void> _reconcileFailure(
+    int sessionId,
+    int generation,
+    String message,
+  ) async {
+    try {
+      await _readState(sessionId, generation);
+      if (!_disposed &&
+          generation == _generation &&
+          _phase != CheckoutControllerPhase.completed) {
+        _error = message;
+        _notify();
+      }
+    } catch (_) {
+      if (!_disposed && generation == _generation) {
+        _setPhase(CheckoutControllerPhase.recoveryRequired, error: message);
+      }
+    }
+  }
 
   // Generation counter guards stale async responses.
   int _generation = 0;
@@ -65,6 +169,7 @@ class CheckoutController extends ChangeNotifier {
 
   bool get isIdle => !_isBusy;
   bool get _isBusy =>
+      _phase == CheckoutControllerPhase.recovering ||
       _phase == CheckoutControllerPhase.checkoutInFlight ||
       _phase == CheckoutControllerPhase.cancelInFlight ||
       _phase == CheckoutControllerPhase.paymentInFlight ||
@@ -95,7 +200,7 @@ class CheckoutController extends ChangeNotifier {
   }) async {
     if (_disposed) return;
     if (_isBusy) return; // Duplicate-tap protection.
-    if (_phase == CheckoutControllerPhase.frozen) return;
+    if (_phase != CheckoutControllerPhase.shopping) return;
 
     final generation = ++_generation;
     _checkoutResult = null;
@@ -105,7 +210,7 @@ class CheckoutController extends ChangeNotifier {
     try {
       final result = await _repository.beginCheckout(
         sessionId: sessionId,
-        idempotencyKey: idempotencyKey,
+        idempotencyKey: _checkoutKey ??= idempotencyKey,
       );
       if (_disposed || generation != _generation) return;
 
@@ -121,12 +226,13 @@ class CheckoutController extends ChangeNotifier {
       }
     } on CheckoutFailure catch (f) {
       if (_disposed || generation != _generation) return;
-      _setPhase(CheckoutControllerPhase.shopping, error: f.displayMessage);
+      await _reconcileFailure(sessionId, generation, f.displayMessage);
     } catch (_) {
       if (_disposed || generation != _generation) return;
-      _setPhase(
-        CheckoutControllerPhase.shopping,
-        error: 'Unable to begin checkout. Please try again.',
+      await _reconcileFailure(
+        sessionId,
+        generation,
+        'Unable to confirm checkout. Retry status.',
       );
     }
   }
@@ -177,12 +283,13 @@ class CheckoutController extends ChangeNotifier {
     } on CheckoutFailure catch (f) {
       if (_disposed || generation != _generation) return;
       // Restore to frozen so user can retry or see current state.
-      _setPhase(CheckoutControllerPhase.frozen, error: f.displayMessage);
+      await _reconcileFailure(sessionId, generation, f.displayMessage);
     } catch (_) {
       if (_disposed || generation != _generation) return;
-      _setPhase(
-        CheckoutControllerPhase.frozen,
-        error: 'Unable to cancel checkout. Please try again.',
+      await _reconcileFailure(
+        sessionId,
+        generation,
+        'Unable to confirm cancellation. Retry status.',
       );
     }
   }
@@ -192,6 +299,9 @@ class CheckoutController extends ChangeNotifier {
       if (!_disposed && _phase == CheckoutControllerPhase.cancelled) {
         _checkoutResult = null;
         _paymentAttempt = null;
+        _checkoutKey = null;
+        _paymentKey = null;
+        items = const [];
         _setPhase(CheckoutControllerPhase.shopping);
       }
     });
@@ -218,30 +328,20 @@ class CheckoutController extends ChangeNotifier {
       final attempt = await _repository.startPayment(
         sessionId: sessionId,
         checkoutId: checkoutId,
-        idempotencyKey: idempotencyKey,
+        idempotencyKey: _paymentKey ??= idempotencyKey,
       );
       if (_disposed || generation != _generation) return;
 
-      _paymentAttempt = attempt;
-      if (attempt.state == PaymentState.completed) {
-        // Already completed from a previous idempotent call.
-        _setPhase(CheckoutControllerPhase.completed);
-      } else if (attempt.state == PaymentState.creationFailed) {
-        _setPhase(
-          CheckoutControllerPhase.frozen,
-          error: 'Payment order could not be created. Please try again.',
-        );
-      } else {
-        _setPhase(CheckoutControllerPhase.paymentReady);
-      }
+      _acceptPayment(attempt);
     } on CheckoutFailure catch (f) {
       if (_disposed || generation != _generation) return;
-      _setPhase(CheckoutControllerPhase.frozen, error: f.displayMessage);
+      await _reconcileFailure(sessionId, generation, f.displayMessage);
     } catch (_) {
       if (_disposed || generation != _generation) return;
-      _setPhase(
-        CheckoutControllerPhase.frozen,
-        error: 'Unable to start payment. Please try again.',
+      await _reconcileFailure(
+        sessionId,
+        generation,
+        'Unable to confirm payment. Retry status.',
       );
     }
   }
@@ -285,12 +385,13 @@ class CheckoutController extends ChangeNotifier {
       }
     } on CheckoutFailure catch (f) {
       if (_disposed || generation != _generation) return;
-      _setPhase(CheckoutControllerPhase.paymentReady, error: f.displayMessage);
+      await _reconcileFailure(sessionId, generation, f.displayMessage);
     } catch (_) {
       if (_disposed || generation != _generation) return;
-      _setPhase(
-        CheckoutControllerPhase.paymentReady,
-        error: 'Demo payment failed. Please try again.',
+      await _reconcileFailure(
+        sessionId,
+        generation,
+        'Unable to confirm payment. Retry status.',
       );
     }
   }
@@ -303,6 +404,9 @@ class CheckoutController extends ChangeNotifier {
   void reset() {
     if (_disposed) return;
     _generation++; // Invalidate pending async operations.
+    _checkoutKey = null;
+    _paymentKey = null;
+    items = const [];
     _checkoutResult = null;
     _paymentAttempt = null;
     _setPhase(CheckoutControllerPhase.shopping);

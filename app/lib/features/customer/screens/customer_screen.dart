@@ -18,7 +18,9 @@ class CustomerScreen extends StatefulWidget {
     required this.repository,
     this.pairing,
     this.checkoutRepository,
-    this.demoPaymentEnabled = const bool.fromEnvironment('SMARTCART_DEMO_PAYMENT'),
+    this.demoPaymentEnabled = const bool.fromEnvironment(
+      'SMARTCART_DEMO_PAYMENT',
+    ),
   });
   final AuthController auth;
   final CartRepository repository;
@@ -33,16 +35,19 @@ class CustomerScreen extends StatefulWidget {
   State<CustomerScreen> createState() => _CustomerScreenState();
 }
 
-class _CustomerScreenState extends State<CustomerScreen> {
+class _CustomerScreenState extends State<CustomerScreen>
+    with WidgetsBindingObserver {
   late final CartController _cart;
   CheckoutController? _checkout;
   final _cartId = TextEditingController();
   final _form = GlobalKey<FormState>();
   String? _sessionId;
+  CustomerCart? _lastCart;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _cart = CartController(widget.repository, pairing: widget.pairing)..load();
     final repo = widget.checkoutRepository;
     if (repo != null) {
@@ -53,14 +58,26 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   void _sessionChanged() {
     final id = _cart.cart?.displayId;
+    if (_cart.cart != null) _lastCart = _cart.cart;
     if (id != null && id != _sessionId) {
       _sessionId = id;
       _checkout?.reset();
+      final sid = int.tryParse(id);
+      if (sid != null) _checkout?.recover(sid);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final sid = int.tryParse(_sessionId ?? '');
+    if (state == AppLifecycleState.resumed && sid != null) {
+      _checkout?.recover(sid);
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cart.removeListener(_sessionChanged);
     _cart.dispose();
     _checkout?.dispose();
@@ -129,22 +146,59 @@ class _CustomerScreenState extends State<CustomerScreen> {
 
   List<Widget> _content(BuildContext context) {
     final receipt = _checkout;
+    final sid = int.tryParse(_sessionId ?? '');
     if (receipt != null &&
-        receipt.phase == CheckoutControllerPhase.completed &&
-        receipt.paymentAttempt?.isCompleted == true) {
-      // RTDB removes the active session on completion, possibly before the
-      // HTTP response arrives. Only that backend response authorizes success.
+        sid != null &&
+        receipt.phase != CheckoutControllerPhase.shopping) {
+      final result = receipt.checkoutResult;
       return [
+        Text('Checkout', style: Theme.of(context).textTheme.headlineSmall),
+        if (receipt.items.isNotEmpty)
+          ...receipt.items.map(
+            (item) => ListTile(
+              title: Text('${item['name']}'),
+              subtitle: Text('Quantity: ${item['quantity']}'),
+              trailing: Text(
+                formatRupees((item['total_paise'] as num).toInt()),
+              ),
+            ),
+          )
+        else
+          ...?_lastCart?.items.map((item) => CartItemCard(item: item)),
         CheckoutPanel(
           controller: receipt,
-          sessionId: receipt.checkoutResult!.sessionId,
-          totalPaise: receipt.paymentAttempt!.amountPaise,
+          sessionId: sid,
+          totalPaise: result?.finalAmountPaise ?? _lastCart?.totalPaise ?? 0,
           isDemo: widget.demoPaymentEnabled,
+          onRefresh: () => receipt.recover(sid),
+          onCancel: result == null
+              ? null
+              : () => receipt.cancelCheckout(
+                  sessionId: sid,
+                  checkoutId: result.checkoutId,
+                ),
+          onStartPayment: result == null
+              ? null
+              : () => receipt.startPayment(
+                  sessionId: sid,
+                  checkoutId: result.checkoutId,
+                  idempotencyKey: _idempotencyKey(),
+                ),
+          onDemoPayment: result == null
+              ? null
+              : () => receipt.simulateDemoPayment(
+                  sessionId: sid,
+                  checkoutId: result.checkoutId,
+                ),
         ),
-        TextButton(
-          onPressed: receipt.reset,
-          child: const Text('Continue to cart pairing'),
-        ),
+        if (receipt.phase == CheckoutControllerPhase.completed)
+          TextButton(
+            onPressed: () {
+              receipt.reset();
+              _cart.load();
+            },
+            child: const Text('Continue to cart pairing'),
+          ),
       ];
     }
     switch (_cart.state) {

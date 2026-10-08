@@ -4,6 +4,8 @@
 /// Flutter MUST NOT recalculate authoritative totals.
 library;
 
+import '../../../core/data/session_mapper.dart' show rupeesToPaise;
+
 /// Backend states for a checkout row.
 ///
 /// FROZEN  — the checkout is active and awaiting payment.
@@ -52,13 +54,13 @@ class CheckoutResult {
   factory CheckoutResult.fromJson(Map<String, dynamic> json) {
     final rawAmount = json['final_amount'];
     // Backend sends final_amount as a float (INR). Convert to paise.
-    final amountPaise = rawAmount is num ? (rawAmount * 100).round() : 0;
+    final amountPaise = rupeesToPaise(rawAmount);
     final rawState = json['state'] as String? ?? '';
     final state = switch (rawState) {
       'FROZEN' => CheckoutState.frozen,
       'CANCELLED' => CheckoutState.cancelled,
       'COMPLETED' => CheckoutState.completed,
-      _ => CheckoutState.frozen,
+      _ => throw const FormatException('Invalid checkout state'),
     };
     return CheckoutResult(
       sessionId: (json['session_id'] as num).toInt(),
@@ -117,6 +119,10 @@ class PaymentAttempt {
   bool get isCompleted => state == PaymentState.completed;
 
   factory PaymentAttempt.fromJson(Map<String, dynamic> json) {
+    final amount = json['amount_paise'];
+    if (amount is! int || amount < 0) {
+      throw const FormatException('Invalid payment amount');
+    }
     final rawState = json['state'] as String? ?? '';
     final state = switch (rawState) {
       'CREATING' => PaymentState.creating,
@@ -129,7 +135,7 @@ class PaymentAttempt {
     return PaymentAttempt(
       paymentAttemptId: json['payment_attempt_id'] as String,
       checkoutId: (json['checkout_id'] as num).toInt(),
-      amountPaise: (json['amount_paise'] as num?)?.toInt() ?? 0,
+      amountPaise: amount,
       currency: json['currency'] as String? ?? 'INR',
       state: state,
       providerOrderId: json['provider_order_id'] as String?,

@@ -28,6 +28,7 @@ class FakeCheckoutRepository implements CheckoutRepository {
   Future<PaymentAttempt> Function()? paymentStatusResponse;
   Future<PaymentAttempt> Function()? simulateDemoPaymentResponse;
 
+  final checkoutKeys = <String>[];
   int beginCheckoutCalls = 0;
   int cancelCheckoutCalls = 0;
   int startPaymentCalls = 0;
@@ -39,6 +40,7 @@ class FakeCheckoutRepository implements CheckoutRepository {
     required String idempotencyKey,
   }) {
     beginCheckoutCalls++;
+    checkoutKeys.add(idempotencyKey);
     return beginCheckoutResponse?.call() ??
         Future.error(const CheckoutFailure('network'));
   }
@@ -55,7 +57,8 @@ class FakeCheckoutRepository implements CheckoutRepository {
 
   @override
   Future<Map<String, dynamic>> readCheckoutState({required int sessionId}) {
-    return readCheckoutStateResponse?.call() ?? Future.value({});
+    return readCheckoutStateResponse?.call() ??
+        Future.value({'state': 'SHOPPING'});
   }
 
   @override
@@ -120,14 +123,14 @@ CheckoutResult frozenCheckout({int checkoutId = 42, double amount = 250.0}) =>
     );
 
 CheckoutResult cancelledCheckout({int checkoutId = 42}) => CheckoutResult(
-      sessionId: 1,
-      cartId: 'CART-001',
-      checkoutId: checkoutId,
-      state: CheckoutState.cancelled,
-      finalAmountPaise: 25000,
-      checkoutStartedAt: '2024-01-01 10:00:00',
-      cancelledAt: '2024-01-01 10:05:00',
-    );
+  sessionId: 1,
+  cartId: 'CART-001',
+  checkoutId: checkoutId,
+  state: CheckoutState.cancelled,
+  finalAmountPaise: 25000,
+  checkoutStartedAt: '2024-01-01 10:00:00',
+  cancelledAt: '2024-01-01 10:05:00',
+);
 
 PaymentAttempt orderReadyAttempt({int checkoutId = 42, int paise = 25000}) =>
     PaymentAttempt(
@@ -172,10 +175,7 @@ void main() {
     test('beginCheckout transitions to frozen on success', () async {
       repo.beginCheckoutResponse = () async => frozenCheckout();
 
-      await controller.beginCheckout(
-        sessionId: 1,
-        idempotencyKey: 'key-1',
-      );
+      await controller.beginCheckout(sessionId: 1, idempotencyKey: 'key-1');
 
       expect(controller.phase, CheckoutControllerPhase.frozen);
       expect(controller.checkoutResult?.checkoutId, 42);
@@ -186,13 +186,12 @@ void main() {
     test('beginCheckout shows error on checkout_already_frozen', () async {
       repo.beginCheckoutResponse = () async =>
           throw const CheckoutFailure('checkout_already_frozen');
+      repo.readCheckoutStateResponse = () async =>
+          throw const CheckoutFailure('network');
 
-      await controller.beginCheckout(
-        sessionId: 1,
-        idempotencyKey: 'key-2',
-      );
+      await controller.beginCheckout(sessionId: 1, idempotencyKey: 'key-2');
 
-      expect(controller.phase, CheckoutControllerPhase.shopping);
+      expect(controller.phase, CheckoutControllerPhase.recoveryRequired);
       expect(controller.error, contains('already'));
     });
 
@@ -235,11 +234,13 @@ void main() {
       repo.beginCheckoutResponse = () async => frozenCheckout();
       repo.cancelCheckoutResponse = () async =>
           throw const CheckoutFailure('payment_already_started');
+      repo.readCheckoutStateResponse = () async =>
+          throw const CheckoutFailure('network');
 
       await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
       await controller.cancelCheckout(sessionId: 1, checkoutId: 42);
 
-      expect(controller.phase, CheckoutControllerPhase.frozen);
+      expect(controller.phase, CheckoutControllerPhase.recoveryRequired);
       expect(controller.error, isNotNull);
     });
 
@@ -267,7 +268,10 @@ void main() {
 
       await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
       await controller.startPayment(
-          sessionId: 1, checkoutId: 42, idempotencyKey: 'pk');
+        sessionId: 1,
+        checkoutId: 42,
+        idempotencyKey: 'pk',
+      );
       await controller.simulateDemoPayment(sessionId: 1, checkoutId: 42);
 
       // CRITICAL: Flutter only accepts COMPLETED from backend.
@@ -281,85 +285,108 @@ void main() {
       repo.beginCheckoutResponse = () async => frozenCheckout();
       repo.startPaymentResponse = () async =>
           throw const CheckoutFailure('payment_unavailable');
+      repo.readCheckoutStateResponse = () async =>
+          throw const CheckoutFailure('network');
 
       await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
       await controller.startPayment(
-          sessionId: 1, checkoutId: 42, idempotencyKey: 'pk');
+        sessionId: 1,
+        checkoutId: 42,
+        idempotencyKey: 'pk',
+      );
 
-      expect(controller.phase, CheckoutControllerPhase.frozen);
+      expect(controller.phase, CheckoutControllerPhase.recoveryRequired);
       expect(controller.error, contains('unavailable'));
     });
 
     // --- Test 9: duplicate Pay protection ---
-    test('duplicate simulateDemoPayment calls are ignored while in-flight',
-        () async {
-      final completer = Completer<PaymentAttempt>();
-      repo.beginCheckoutResponse = () async => frozenCheckout();
-      repo.startPaymentResponse = () async => orderReadyAttempt();
-      repo.simulateDemoPaymentResponse = () => completer.future;
+    test(
+      'duplicate simulateDemoPayment calls are ignored while in-flight',
+      () async {
+        final completer = Completer<PaymentAttempt>();
+        repo.beginCheckoutResponse = () async => frozenCheckout();
+        repo.startPaymentResponse = () async => orderReadyAttempt();
+        repo.simulateDemoPaymentResponse = () => completer.future;
 
-      await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
-      await controller.startPayment(
-          sessionId: 1, checkoutId: 42, idempotencyKey: 'pk');
+        await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
+        await controller.startPayment(
+          sessionId: 1,
+          checkoutId: 42,
+          idempotencyKey: 'pk',
+        );
 
-      final first =
-          controller.simulateDemoPayment(sessionId: 1, checkoutId: 42);
-      expect(controller.phase, CheckoutControllerPhase.demoPaymentInFlight);
+        final first = controller.simulateDemoPayment(
+          sessionId: 1,
+          checkoutId: 42,
+        );
+        expect(controller.phase, CheckoutControllerPhase.demoPaymentInFlight);
 
-      // Duplicate tap — should be dropped.
-      await controller.simulateDemoPayment(sessionId: 1, checkoutId: 42);
-      expect(repo.simulateDemoPaymentCalls, 1);
+        // Duplicate tap — should be dropped.
+        await controller.simulateDemoPayment(sessionId: 1, checkoutId: 42);
+        expect(repo.simulateDemoPaymentCalls, 1);
 
-      completer.complete(completedAttempt());
-      await first;
-      expect(controller.phase, CheckoutControllerPhase.completed);
-    });
+        completer.complete(completedAttempt());
+        await first;
+        expect(controller.phase, CheckoutControllerPhase.completed);
+      },
+    );
 
     // --- Test 10: network failure ---
-    test('network failure on beginCheckout shows user-friendly error', () async {
-      repo.beginCheckoutResponse = () async =>
-          throw const CheckoutFailure('network');
+    test(
+      'network failure on beginCheckout shows user-friendly error',
+      () async {
+        repo.beginCheckoutResponse = () async =>
+            throw const CheckoutFailure('network');
 
-      await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
+        await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
 
-      expect(controller.phase, CheckoutControllerPhase.shopping);
-      expect(controller.error, contains('connection'));
-    });
+        expect(controller.phase, CheckoutControllerPhase.shopping);
+        expect(controller.error, contains('connection'));
+      },
+    );
 
     // --- Test 11: authoritative amount handling (paise) ---
-    test('checkout preserves server amount in paise without recalculation',
-        () async {
-      // Server returns 123.45 INR = 12345 paise.
-      repo.beginCheckoutResponse =
-          () async => frozenCheckout(amount: 123.45);
+    test(
+      'checkout preserves server amount in paise without recalculation',
+      () async {
+        // Server returns 123.45 INR = 12345 paise.
+        repo.beginCheckoutResponse = () async => frozenCheckout(amount: 123.45);
 
-      await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
+        await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
 
-      // Flutter stores the amount as returned by backend.
-      expect(controller.checkoutResult?.finalAmountPaise, 12345);
-    });
+        // Flutter stores the amount as returned by backend.
+        expect(controller.checkoutResult?.finalAmountPaise, 12345);
+      },
+    );
 
     // --- Test 12: completed payment state ---
-    test('already-completed payment from startPayment transitions to completed',
-        () async {
-      repo.beginCheckoutResponse = () async => frozenCheckout();
-      // Backend returns COMPLETED on payment/start (idempotent replay).
-      repo.startPaymentResponse = () async => completedAttempt();
+    test(
+      'already-completed payment from startPayment transitions to completed',
+      () async {
+        repo.beginCheckoutResponse = () async => frozenCheckout();
+        // Backend returns COMPLETED on payment/start (idempotent replay).
+        repo.startPaymentResponse = () async => completedAttempt();
 
-      await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
-      await controller.startPayment(
-          sessionId: 1, checkoutId: 42, idempotencyKey: 'pk');
+        await controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
+        await controller.startPayment(
+          sessionId: 1,
+          checkoutId: 42,
+          idempotencyKey: 'pk',
+        );
 
-      expect(controller.phase, CheckoutControllerPhase.completed);
-    });
+        expect(controller.phase, CheckoutControllerPhase.completed);
+      },
+    );
 
     // --- Test 13: stale response protection ---
     test('stale response after reset is ignored', () async {
       final completer = Completer<CheckoutResult>();
       repo.beginCheckoutResponse = () => completer.future;
 
-      final inFlight =
-          controller.beginCheckout(sessionId: 1, idempotencyKey: 'k');
+      final inFlight = controller.beginCheckout(
+        sessionId: 1,
+        idempotencyKey: 'k',
+      );
 
       // Reset invalidates current generation before response arrives.
       controller.reset();
@@ -400,32 +427,32 @@ void main() {
       String state = 'FROZEN',
       int checkoutId = 10,
     }) => {
-          'session_id': 1,
-          'cart_id': 'CART-001',
-          'checkout_id': checkoutId,
-          'state': state,
-          'final_amount': 250.0,
-          'checkout_started_at': '2024-01-01 10:00:00',
-          'cancelled_at': null,
-          'runtime_restart_required': false,
-          'currency': 'INR',
-        };
+      'session_id': 1,
+      'cart_id': 'CART-001',
+      'checkout_id': checkoutId,
+      'state': state,
+      'final_amount': 250.0,
+      'checkout_started_at': '2024-01-01 10:00:00',
+      'cancelled_at': null,
+      'runtime_restart_required': false,
+      'currency': 'INR',
+    };
 
     Map<String, dynamic> paymentJson({
       String state = 'ORDER_READY',
       int amountPaise = 25000,
     }) => {
-          'payment_attempt_id': '99ab0123456789abcdef0123456789abcd',
-          'checkout_id': 10,
-          'amount_paise': amountPaise,
-          'currency': 'INR',
-          'state': state,
-          'provider_order_id': 'order_abc',
-          'created_at': '2024-01-01 10:01:00',
-          'verified_at': null,
-          'completed_at': null,
-          'error_code': null,
-        };
+      'payment_attempt_id': '99ab0123456789abcdef0123456789abcd',
+      'checkout_id': 10,
+      'amount_paise': amountPaise,
+      'currency': 'INR',
+      'state': state,
+      'provider_order_id': 'order_abc',
+      'created_at': '2024-01-01 10:01:00',
+      'verified_at': null,
+      'completed_at': null,
+      'error_code': null,
+    };
 
     test('beginCheckout posts to correct URL with auth header', () async {
       Uri? captured;
@@ -500,10 +527,8 @@ void main() {
         );
       });
 
-      final attempt = await makeRepo(client).simulateDemoPaymentSuccess(
-        sessionId: 1,
-        checkoutId: 10,
-      );
+      final attempt = await makeRepo(client)
+          .simulateDemoPaymentSuccess(sessionId: 1, checkoutId: 10);
 
       expect(
         captured?.path,
@@ -522,10 +547,7 @@ void main() {
       );
 
       expect(
-        () => makeRepo(client).beginCheckout(
-          sessionId: 1,
-          idempotencyKey: 'k',
-        ),
+        () => makeRepo(client).beginCheckout(sessionId: 1, idempotencyKey: 'k'),
         throwsA(
           isA<CheckoutFailure>().having(
             (f) => f.code,
@@ -549,10 +571,7 @@ void main() {
       );
 
       expect(
-        () => makeRepo(client).beginCheckout(
-          sessionId: 1,
-          idempotencyKey: 'k',
-        ),
+        () => makeRepo(client).beginCheckout(sessionId: 1, idempotencyKey: 'k'),
         throwsA(
           isA<CheckoutFailure>().having(
             (f) => f.code,
@@ -573,11 +592,8 @@ void main() {
         ),
       );
 
-      final attempt = await makeRepo(client).startPayment(
-        sessionId: 1,
-        checkoutId: 10,
-        idempotencyKey: 'k',
-      );
+      final attempt = await makeRepo(client)
+          .startPayment(sessionId: 1, checkoutId: 10, idempotencyKey: 'k');
 
       expect(attempt.amountPaise, 12345);
     });
@@ -589,31 +605,29 @@ void main() {
       );
 
       expect(
-        () => makeRepo(client).beginCheckout(
-          sessionId: 1,
-          idempotencyKey: 'k',
-        ),
+        () => makeRepo(client).beginCheckout(sessionId: 1, idempotencyKey: 'k'),
         throwsA(isA<CheckoutFailure>()),
       );
     });
 
-    test('demo payment not completed state does not count as success', () async {
-      // Backend returns ORDER_READY instead of COMPLETED.
-      final client = MockClient(
-        (_) async => http.Response(
-          jsonEncode(paymentJson(state: 'ORDER_READY')),
-          200,
-          headers: jsonHeader(),
-        ),
-      );
+    test(
+      'demo payment not completed state does not count as success',
+      () async {
+        // Backend returns ORDER_READY instead of COMPLETED.
+        final client = MockClient(
+          (_) async => http.Response(
+            jsonEncode(paymentJson(state: 'ORDER_READY')),
+            200,
+            headers: jsonHeader(),
+          ),
+        );
 
-      final attempt = await makeRepo(client).simulateDemoPaymentSuccess(
-        sessionId: 1,
-        checkoutId: 10,
-      );
+        final attempt = await makeRepo(client)
+            .simulateDemoPaymentSuccess(sessionId: 1, checkoutId: 10);
 
-      // Controller would see isCompleted = false and show an error.
-      expect(attempt.isCompleted, isFalse);
-    });
+        // Controller would see isCompleted = false and show an error.
+        expect(attempt.isCompleted, isFalse);
+      },
+    );
   });
 }
