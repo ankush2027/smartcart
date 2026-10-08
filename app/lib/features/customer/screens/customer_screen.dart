@@ -18,6 +18,7 @@ class CustomerScreen extends StatefulWidget {
     required this.repository,
     this.pairing,
     this.checkoutRepository,
+    this.demoPaymentEnabled = const bool.fromEnvironment('SMARTCART_DEMO_PAYMENT'),
   });
   final AuthController auth;
   final CartRepository repository;
@@ -25,6 +26,8 @@ class CustomerScreen extends StatefulWidget {
 
   /// Optional checkout repository. When null, checkout is unavailable.
   final CheckoutRepository? checkoutRepository;
+  // Explicit payment demo opt-in, independent of live Firebase cart discovery.
+  final bool demoPaymentEnabled;
 
   @override
   State<CustomerScreen> createState() => _CustomerScreenState();
@@ -35,6 +38,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
   CheckoutController? _checkout;
   final _cartId = TextEditingController();
   final _form = GlobalKey<FormState>();
+  String? _sessionId;
 
   @override
   void initState() {
@@ -44,10 +48,20 @@ class _CustomerScreenState extends State<CustomerScreen> {
     if (repo != null) {
       _checkout = CheckoutController(repo);
     }
+    _cart.addListener(_sessionChanged);
+  }
+
+  void _sessionChanged() {
+    final id = _cart.cart?.displayId;
+    if (id != null && id != _sessionId) {
+      _sessionId = id;
+      _checkout?.reset();
+    }
   }
 
   @override
   void dispose() {
+    _cart.removeListener(_sessionChanged);
     _cart.dispose();
     _checkout?.dispose();
     _cartId.dispose();
@@ -114,6 +128,25 @@ class _CustomerScreenState extends State<CustomerScreen> {
   }
 
   List<Widget> _content(BuildContext context) {
+    final receipt = _checkout;
+    if (receipt != null &&
+        receipt.phase == CheckoutControllerPhase.completed &&
+        receipt.paymentAttempt?.isCompleted == true) {
+      // RTDB removes the active session on completion, possibly before the
+      // HTTP response arrives. Only that backend response authorizes success.
+      return [
+        CheckoutPanel(
+          controller: receipt,
+          sessionId: receipt.checkoutResult!.sessionId,
+          totalPaise: receipt.paymentAttempt!.amountPaise,
+          isDemo: widget.demoPaymentEnabled,
+        ),
+        TextButton(
+          onPressed: receipt.reset,
+          child: const Text('Continue to cart pairing'),
+        ),
+      ];
+    }
     switch (_cart.state) {
       case CartLoadState.loading:
         return [
@@ -235,7 +268,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
               controller: checkout,
               sessionId: sessionId,
               totalPaise: cart.totalPaise,
-              isDemo: _cart.isDemo,
+              isDemo: widget.demoPaymentEnabled,
               onCheckout: () => checkout.beginCheckout(
                 sessionId: sessionId,
                 idempotencyKey: _idempotencyKey(),

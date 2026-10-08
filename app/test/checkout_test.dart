@@ -131,7 +131,7 @@ CheckoutResult cancelledCheckout({int checkoutId = 42}) => CheckoutResult(
 
 PaymentAttempt orderReadyAttempt({int checkoutId = 42, int paise = 25000}) =>
     PaymentAttempt(
-      paymentAttemptId: 99,
+      paymentAttemptId: '99ab0123456789abcdef0123456789abcd',
       checkoutId: checkoutId,
       amountPaise: paise,
       currency: 'INR',
@@ -142,7 +142,7 @@ PaymentAttempt orderReadyAttempt({int checkoutId = 42, int paise = 25000}) =>
 
 PaymentAttempt completedAttempt({int checkoutId = 42, int paise = 25000}) =>
     PaymentAttempt(
-      paymentAttemptId: 99,
+      paymentAttemptId: '99ab0123456789abcdef0123456789abcd',
       checkoutId: checkoutId,
       amountPaise: paise,
       currency: 'INR',
@@ -415,7 +415,7 @@ void main() {
       String state = 'ORDER_READY',
       int amountPaise = 25000,
     }) => {
-          'payment_attempt_id': 99,
+          'payment_attempt_id': '99ab0123456789abcdef0123456789abcd',
           'checkout_id': 10,
           'amount_paise': amountPaise,
           'currency': 'INR',

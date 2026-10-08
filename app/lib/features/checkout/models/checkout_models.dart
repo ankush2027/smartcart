@@ -101,7 +101,7 @@ class PaymentAttempt {
     this.errorCode,
   });
 
-  final int paymentAttemptId;
+  final String paymentAttemptId;
   final int checkoutId;
 
   /// Authoritative amount in paise from the backend. Never recalculated.
@@ -123,11 +123,11 @@ class PaymentAttempt {
       'ORDER_READY' => PaymentState.orderReady,
       'VERIFIED' => PaymentState.verified,
       'COMPLETED' => PaymentState.completed,
-      'CREATION_FAILED' => PaymentState.creationFailed,
+      'FAILED' => PaymentState.creationFailed,
       _ => PaymentState.unknown,
     };
     return PaymentAttempt(
-      paymentAttemptId: (json['payment_attempt_id'] as num).toInt(),
+      paymentAttemptId: json['payment_attempt_id'] as String,
       checkoutId: (json['checkout_id'] as num).toInt(),
       amountPaise: (json['amount_paise'] as num?)?.toInt() ?? 0,
       currency: json['currency'] as String? ?? 'INR',
