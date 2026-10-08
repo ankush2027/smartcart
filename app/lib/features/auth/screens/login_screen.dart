@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../controllers/auth_controller.dart';
 import '../models/auth_user.dart';
+import 'signup_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.controller});
@@ -17,6 +18,14 @@ class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   bool _obscurePassword = true;
+  bool _signingUp = false;
+
+  void _showSignup(bool value) {
+    if (widget.controller.isBusy) return;
+    _password.clear();
+    widget.controller.clearError();
+    setState(() => _signingUp = value);
+  }
 
   @override
   void dispose() {
@@ -35,6 +44,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_signingUp) {
+      return SignupScreen(controller: widget.controller, onLogin: () => _showSignup(false));
+    }
     final auth = widget.controller;
     final theme = Theme.of(context);
     return Scaffold(
@@ -192,6 +204,14 @@ class _LoginScreenState extends State<LoginScreen> {
                             : const Text('Sign In'),
                       ),
                     ),
+                    if (auth.supportsRegistration) ...[
+                      const SizedBox(height: 12),
+                      TextButton(
+                        key: const Key('open_signup'),
+                        onPressed: auth.isBusy ? null : () => _showSignup(true),
+                        child: const Text('New to SmartCart? Sign Up'),
+                      ),
+                    ],
                   ],
                 ),
               ),

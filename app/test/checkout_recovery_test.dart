@@ -186,6 +186,23 @@ void main() {
     expect(find.text('Payment Successful'), findsOneWidget);
     expect(find.text('Lays'), findsOneWidget);
     expect(repo.simulateDemoPaymentCalls, 1);
+    await tester.ensureVisible(find.text('Continue to cart pairing'));
+    await tester.tap(find.text('Continue to cart pairing'));
+    // Flush asynchronous stream cancellation before emitting on the new listener.
+    await tester.runAsync(() async {
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pump();
+    expect(cart.starts, 2);
+    expect(cart.events.hasListener, isTrue);
+    cart.events.add(null);
+    await tester.pumpAndSettle();
+    expect(find.text('No active cart'), findsOneWidget);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.text('No active cart'), findsOneWidget);
+    expect(find.text('Checkout'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     auth.dispose();
     await cart.dispose();

@@ -43,6 +43,39 @@ class AuthController extends ChangeNotifier {
   AuthUser? get user => _user;
   bool get isBusy => _busy;
   String? get error => _error;
+  bool get supportsRegistration => _repository is CustomerRegistration;
+
+  void clearError() {
+    if (_busy || _disposed) return;
+    _error = null;
+    notifyListeners();
+  }
+
+  Future<void> signUp({
+    required String fullName,
+    required String email,
+    required String password,
+  }) async {
+    if (_busy || _disposed || !supportsRegistration) return;
+    _busy = true;
+    _operation = true;
+    _user = null;
+    _error = null;
+    notifyListeners();
+    try {
+      _user = await (_repository as CustomerRegistration).signUp(
+        fullName: fullName.trim(), email: email.trim(), password: password,
+      );
+    } catch (error) {
+      _user = null;
+      _error = error is AuthFailure
+          ? error.message : 'Unable to create your account. Please try again.';
+    } finally {
+      _operation = false;
+      _busy = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
   bool get supportsDevelopmentRoles => _repository is DevelopmentRoleSelection;
   UserRole? get developmentRole => _repository is DevelopmentRoleSelection
       ? (_repository as DevelopmentRoleSelection).selectedRole

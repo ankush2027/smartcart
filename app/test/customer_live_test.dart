@@ -219,14 +219,16 @@ void main() {
       repo.events.add(null);
       await tester.pump();
       expect(find.text('Enter Cart ID'), findsOneWidget);
+      await tester.ensureVisible(find.text('Connect Cart'));
       await tester.tap(find.text('Connect Cart'));
       await tester.pump();
       expect(find.text('Enter a Cart ID.'), findsOneWidget);
       await tester.enterText(find.byType(TextFormField), 'CART-001');
+      await tester.ensureVisible(find.text('Connect Cart'));
       await tester.tap(find.text('Connect Cart'));
       await tester.pump();
       expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        tester.widget<FilledButton>(find.byKey(const Key('connect_cart'))).onPressed,
         isNull,
       );
       api.pending.complete();
@@ -270,8 +272,10 @@ void main() {
     repo.events.add(null);
     await tester.pump();
     await tester.enterText(find.byType(TextFormField), 'OLD-CART');
+    await tester.ensureVisible(find.text('Connect Cart'));
     await tester.tap(find.text('Connect Cart'));
     await tester.pump();
+    await tester.ensureVisible(find.text('Logout'));
     await tester.tap(find.text('Logout'));
     await tester.pumpAndSettle();
     api.pending.complete();
@@ -305,6 +309,7 @@ void main() {
       repo.events.add(null);
       await tester.pump();
       await tester.enterText(find.byType(TextFormField), 'B-CART');
+      await tester.ensureVisible(find.text('Connect Cart'));
       await tester.tap(find.text('Connect Cart'));
       await tester.pump();
       auth.switchTo('c');

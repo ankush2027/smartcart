@@ -7,6 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:smartcart/app.dart';
+import 'package:smartcart/features/customer/screens/customer_screen.dart';
 import 'package:smartcart/features/auth/controllers/auth_controller.dart';
 import 'package:smartcart/features/auth/data/auth_repository.dart';
 import 'package:smartcart/features/auth/data/firebase_auth_repository.dart';
@@ -148,6 +149,42 @@ void main() {
   );
 
   test(
+    'same-user token refresh preserves access while claims resolve',
+    () async {
+      final controller = AuthController(repository);
+      await flush();
+      await controller.signIn(email: 'a@example.test', password: 'test');
+      final pending = Completer<IdTokenResult>();
+      firebase.nextUser.pending = pending;
+      final observed = <AuthUser?>[];
+      controller.addListener(() => observed.add(controller.user));
+      firebase.change(firebase.nextUser);
+      await flush();
+      expect(controller.user?.uid, 'firebase-customer-uid');
+      expect(observed.where((user) => user == null), isEmpty);
+      pending.complete(FakeToken({}));
+      await flush();
+      expect(observed.where((user) => user == null), isEmpty);
+      controller.dispose();
+    },
+  );
+
+  test('failed same-user token refresh clears authorization', () async {
+    final controller = AuthController(repository);
+    await flush();
+    await controller.signIn(email: 'a@example.test', password: 'test');
+    final pending = Completer<IdTokenResult>();
+    firebase.nextUser.pending = pending;
+    firebase.change(firebase.nextUser);
+    await flush();
+    pending.completeError(FirebaseAuthException(code: 'invalid-user-token'));
+    await flush();
+    expect(controller.user, isNull);
+    expect(repository.currentUser, isNull);
+    controller.dispose();
+  });
+
+  test(
     'sign-out clears role and switching users cannot retain manager',
     () async {
       final controller = AuthController(repository);
@@ -266,6 +303,23 @@ void main() {
           find.text(manager ? 'Customer Cart' : 'Manager Dashboard'),
           findsNothing,
         );
+        if (!manager) {
+          final mountedCustomer = tester.state(find.byType(CustomerScreen));
+          final pending = Completer<IdTokenResult>();
+          firebase.nextUser.pending = pending;
+          firebase.change(firebase.nextUser);
+          await tester.pump();
+          expect(
+            tester.state(find.byType(CustomerScreen)),
+            same(mountedCustomer),
+          );
+          pending.complete(FakeToken({}));
+          await tester.pumpAndSettle();
+          expect(
+            tester.state(find.byType(CustomerScreen)),
+            same(mountedCustomer),
+          );
+        }
         await tester.scrollUntilVisible(find.text('Logout'), 300);
         await tester.tap(find.text('Logout'));
         await tester.pumpAndSettle();
