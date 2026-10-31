@@ -289,7 +289,14 @@ def read_checkout_state(session_id, verified_customer_uid):
     with _owned_session(session_id, verified_customer_uid, write=False) as (conn, cart, end, amount, rows):
         latest = rows[-1] if rows else None
         frozen = latest is not None and latest['state'] == 'FROZEN'
-        return dict(session_id=session_id, cart_id=cart,
+        from edge.payment.money import to_paise
+        items = [dict(product_id=pid, name=name, quantity=quantity,
+                      unit_price_paise=to_paise(price), total_paise=to_paise(total))
+                 for pid, name, quantity, price, total in conn.execute(
+                     'SELECT b.product_id,p.name,b.quantity,b.price,b.total '
+                     'FROM bill_items b JOIN products p ON p.product_id=b.product_id '
+                     'WHERE b.session_id=? ORDER BY b.product_id', (session_id,))]
+        return dict(session_id=session_id, cart_id=cart, items=items,
                     state='COMPLETED' if end is not None else 'CHECKOUT_FROZEN' if frozen else 'SHOPPING',
                     current_checkout_id=latest['checkout_id'] if frozen else None,
                     latest_checkout=asdict(_result(latest, cart)) if latest else None,

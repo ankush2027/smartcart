@@ -99,6 +99,16 @@ def simulate_demo_payment_success(
     # 1. Read current payment attempt
     attempt = payment_service.status(session_id, checkout_id, uid)
 
+    if attempt['state'] in ('VERIFIED', 'COMPLETED'):
+        result = payment_service.complete(checkout_id, attempt['payment_attempt_id'])
+        if attempt['state'] == 'COMPLETED' and payment_service.completion_sync is not None:
+            try:
+                payment_service.completion_sync(session_id)
+                result['projection_sync'] = 'succeeded'
+            except Exception:
+                result['projection_sync'] = 'reconciliation_required'
+        return result
+
     # 2. If still in CREATING state, recover it
     if attempt.get("state") == "CREATING":
         attempt = payment_service.recover_creation(attempt["payment_attempt_id"])

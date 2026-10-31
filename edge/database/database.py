@@ -94,6 +94,16 @@ def initialize_database():
         )
     """)
 
+    # Additive, identity-only customer registration. Existing session and bill
+    # history remains authoritative and is never rewritten by this table.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+            customer_uid TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     try:
         if 'checkout_started_at' not in {row[1] for row in cursor.execute('PRAGMA table_info(sessions)')}:
             cursor.execute('ALTER TABLE sessions ADD COLUMN checkout_started_at TEXT')

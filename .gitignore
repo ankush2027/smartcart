@@ -3,6 +3,9 @@ firebase-adminsdk*.json
 *firebase-adminsdk*.json
 *.env
 .env
+.env.*
+!.env.example
+!.env.*.example
 
 # Model weights
 *.pt
@@ -26,6 +29,15 @@ app/.flutter-plugins-dependencies
 *.db
 *.sqlite
 *.sqlite3
+*.bak
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+
+# Private signing material
+*.jks
+*.keystore
 
 #Virtual environment
 .venv/
@@ -36,3 +48,7 @@ __pycache__/
 *.sqlite3
 # Opt-in selected-frame diagnostic images
 /data/diagnostics/
+/data/*.lock
+/data/**/*.lock
+/config/demo-deployment.conf
+/logs/

@@ -1,0 +1,5 @@
+# Copy to config/demo-deployment.conf and set values from your Cloudflare account.
+# Never put a token or credential contents here; point to the protected JSON file.
+TUNNEL_NAME=00000000-0000-0000-0000-000000000000
+HOSTNAME=cart.example.com
+CREDENTIALS_FILE=/Users/REPLACE/.cloudflared/00000000-0000-0000-0000-000000000000.json

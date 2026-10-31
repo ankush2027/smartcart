@@ -1,0 +1,6 @@
+**
+!requirements-cloud.txt
+!Dockerfile.cloud
+!edge/
+!edge/**/*.py
+edge/**/__pycache__/
