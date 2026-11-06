@@ -58,9 +58,14 @@ If the model is stored elsewhere, supply its existing path with
 
 ## Build and install Android debug APK
 
+Place the existing project's `google-services.json` at
+`app/android/app/google-services.json` (keep it untracked), and use the same
+Firebase project as the authenticated application. Then run:
+
 ```sh
 cd app
-/Users/Ankush/flutter/bin/flutter build apk --debug --no-pub \
+/Users/Ankush/flutter/bin/flutter pub get
+/Users/Ankush/flutter/bin/flutter build apk --debug \
   --dart-define=SMARTCART_API_BASE_URL="$SMARTCART_API_BASE_URL"
 adb install -r build/app/outputs/flutter-apk/app-debug.apk
 ```
