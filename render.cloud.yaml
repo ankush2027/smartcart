@@ -1,0 +1,31 @@
+# REVIEW TEMPLATE ONLY. No resource has been created.
+services:
+  - type: web
+    name: smartcart-cloud
+    runtime: docker
+    branch: feature/hardware-integration
+    dockerfilePath: ./Dockerfile.cloud
+    plan: 0.5c-512mb
+    numInstances: 1
+    autoDeployTrigger: 'off'
+    healthCheckPath: /health/ready
+    disk:
+      name: smartcart-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: SMARTCART_API_HOST
+        value: 0.0.0.0
+      - key: SMARTCART_DATABASE_PATH
+        value: /var/data/smartcart.db
+      - key: SMARTCART_ALLOWED_CARTS
+        value: CART-001
+      - key: SMARTCART_DEMO_PAYMENT
+        value: "false"
+      # Must be resolved for that platform before deployment; no wildcard trust.
+      - key: SMARTCART_TRUSTED_PROXY
+        sync: false
+      - key: SMARTCART_FIREBASE_URL
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /etc/secrets/firebase-service-account.json

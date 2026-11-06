@@ -1,0 +1,1 @@
+# edge/firebase package

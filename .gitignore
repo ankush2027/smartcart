@@ -1,0 +1,54 @@
+# Firebase credentials
+firebase-adminsdk*.json
+*firebase-adminsdk*.json
+*.env
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Model weights
+*.pt
+*.weights
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Flutter build output
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+
+# Mac files
+.DS_Store
+
+# SQLite database
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+
+# Private signing material
+*.jks
+*.keystore
+
+#Virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
+# Opt-in selected-frame diagnostic images
+/data/diagnostics/
+/data/*.lock
+/data/**/*.lock
+/config/demo-deployment.conf
+/logs/
